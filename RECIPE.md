@@ -35,10 +35,11 @@ bottom:
     background and `accent` icon when on), the commit count in 11px `dim` on
     the right (`300+` when there are more), and Refresh.
 - **The list.**
-  - On Changes, rows are 26px, radius 6, 6px padding around the list. Group
-    headers show a chevron, the title at 12px `muted`, a 14px checkbox and a
-    count chip (`raised`, 10.5px). The groups are Conflicts, Tracked,
-    Untracked and Stashes, and empty ones are left out.
+  - On Changes, rows are 26px, radius 6, in a virtual list with 6px side
+    padding (inside each row) and 4px above and below. Group headers show a
+    chevron, the title at 12px `muted`, a 14px checkbox and a 32px count chip
+    (`raised`, 10.5px, centered). The groups are Conflicts, Tracked, Untracked
+    and Stashes, and empty ones are left out.
   - A file row shows: a 14px checkbox (3px radius, `input` border; `accent`
     filled with ✓ when staged, `accent` `−` when partly staged); the status
     letter 11px (`blocked` for M, `ansi2` for A and U, `ansi1` for D and
@@ -48,10 +49,13 @@ bottom:
     row shows a checkbox (all, some or none staged inside), a chevron, a folder
     icon and the name in `muted`. A folder holding only one folder is merged
     with it (`src/ui`). A folded folder shows its file count on the right.
-  - Hovering a file swaps the counts for a 22px discard button (`ansi1`).
+  - A file row ends with a 22px discard button (undo, or trash for an
+    untracked file) in `dim`. Under the pointer it gets a `hover` background
+    and turns `ansi1`. Armed, it is `ansi1` on an `ansi1` 13% background, "Sure?"
+    replaces the counts, and its tooltip says "Click again to confirm".
   - The row the diff tab shows is `selected` with a 1px `accent` border.
-  - A stash row shows a stash icon, its message, and its age in 11px `dim`.
-    Hovering it shows Apply, Pop and Drop.
+  - A stash row shows a stash icon, its message, its age in 11px `dim`, and
+    three 22px buttons, 8px apart: Apply (✓), Pop and Drop (`ansi1` on hover).
   - With no changes: "No changes to commit", centered, `dim`, and
     "N commits to push" under it when the branch is ahead.
 - **History rows**, 24px each, a virtual list.
@@ -92,6 +96,18 @@ bottom:
   - Hunk headers are `raised` and `dim`, across both columns. When a diff
     covers several files, each file starts with a 24px header in bold on
     `raised`.
+  - **An image file** (png, jpg, jpeg, gif, webp, svg, bmp) gets a picture row
+    right under its file header, in place of "Binary file changed"; an SVG's
+    text diff still follows it. Each side is a cell with 10px padding: a 22px
+    caption (an 18px chip, `Before` in `ansi1` or `After` in `ansi2` at 13%, then
+    "W × H · size" in 11px `dim`) and the picture on a `raised` box, scaled down
+    to fit and never up. In one column a modified image stacks Before over
+    After, an added one shows only After, a deleted one only Before. In two
+    columns the two cells sit side by side with a 1px `border`, and the side
+    with nothing says why ("Added: no image before", "Deleted: no image
+    after"). A diff of one image fills the tab's height; with several, each
+    picture is at most 320px tall. While loading, a cell reads "Loading
+    image…". The row has a 1px bottom `border`.
 - **A note**, 11px `ansi1`, above the commit area when git refuses something.
   Click it to dismiss.
 - **The commit area**, on `chrome` with a top border:
@@ -121,6 +137,12 @@ hint in 11px `dim`. Danger items are `ansi1`.
 - **Staying current.**
   - It refreshes whenever its folder changes (`watchFolder`), every 10s, when
     the focus moves to another folder, and after every action.
+  - A refresh whose git output (status, counts, stashes, remotes, last commit)
+    is the same as the last one, within the same minute, changes nothing and
+    redraws nothing. The diff tab does the same when its lines are unchanged.
+  - The panel builds its list rows once per change of files, stashes, folding or
+    list mode, and reads `spaces()` and `shared()` once per render, not once per
+    row.
   - Folders on other machines are polled instead of watched.
   - It sets and listens to `shared("git-graph.changed")`, so herdr-git-graph
     refreshes after this panel acts, and the other way round.
@@ -142,20 +164,35 @@ hint in 11px `dim`. Danger items are `ansi1`.
       makes a new one.
   - A folder row toggles folding. A checkbox stages or unstages without opening
     the file.
+  - The Changes list is a virtual list, so its rows hold no handlers. The list
+    reports the clicked row's key; an `on_mouse_down` on a wrapper records how
+    far from the left the press landed; `zoneAt()` in `rows.js` turns that into
+    the control under the pointer: the checkbox, the discard button, a stash's
+    Apply, Pop or Drop, or the row itself. The same measurements draw the rows,
+    so the two can't drift. Hover is only the row's native `hover` style and
+    never re-renders the panel.
   - A group's or a folder's checkbox stages everything in it, or unstages it
     when all of it is staged.
   - The Tree/Flat and One/Two-column pairs switch at once. The column choice is
     `shared("git-changes.layout")`, so the panel's pair and every diff tab's
     pair stay in step.
   - Right-click menus:
-    - File: stage or unstage, Show diff, copy path, copy full path, and
-      Discard (danger).
+    - File: stage or unstage, Show diff, Open folder and Open in terminal (its
+      containing folder; the root for a file in the root), copy path, copy full
+      path, and Discard (danger).
+    - Folder: Stage or Unstage folder, Open folder, Open in terminal, copy path,
+      copy full path.
     - Stash: Apply, Pop, Show diff, and Drop (danger).
     - Commit: checkout each local branch on it, checkout each remote-only
       branch with tracking, checkout this commit (detached), Show diff, copy
       hash (⌘C), copy short hash, copy message, Uncommit (last commit only),
       and Revert.
   - In History, right-clicking the uncommitted row opens the ☰ menu.
+  - **Open folder** runs `xdg-open` (Linux), `open` (macOS) or `explorer`
+    (Windows) on the folder, with a 10s timeout that is not treated as a
+    failure. It is disabled for a space on another machine. **Open in terminal**
+    runs `tab.new {space, folder, name}`; Herdr has no command that opens a
+    folder in a file manager.
 - **Keys.** ⌘↩ (or ctrl-↩) commits. ⌘C (or ctrl-shift-c) copies the hash of
   the commit the diff tab shows, except while the message box has the
   keyboard. Esc leaves the message box. In menus: ↑/↓, ↩ or space, Esc. In two
@@ -219,17 +256,30 @@ hint in 11px `dim`. Danger items are `ansi1`.
 - **Panel props:** `folder`, `on`, and `tab` (`"changes"` or `"history"`).
 - **Files:**
   - `main.js`: picks the role.
-  - `panel.js`: state, refresh, actions, the Changes tab (tree and flat) and
-    the commit area.
+  - `panel.js`: state, refresh, actions, the Changes tab (a virtual list of
+    tree or flat rows), the menus, Open folder, and the commit area.
+  - `rows.js`: the list as flat rows (`buildRows()`), their measurements and
+    `zoneAt()`. No Herdr imports, so `node` can test it.
+  - `images.js`: for an image row, finds each side (a git object by
+    `rev-parse`, or the file by `hash-object`), checks its size, and copies it
+    to `data/git-changes/preview/<id>.<ext>` under Herdr's folder with
+    `sh -c 'git cat-file blob "$1" > "$2.part" && mv -- "$2.part" "$2"'` (or
+    `cp`), arguments passed separately, because `image()` loads only from
+    Herdr's folder. Names come from the content, so a cached image is never
+    stale; the folder is emptied past 300 files.
+  - `imageinfo.js`: width and height read from PNG, GIF, JPEG, WebP, BMP and SVG
+    bytes, `fitSize()`, `formatBytes()`.
   - `history.js`: the graph.
   - `lanes.js`: lane layout, copied unchanged from herdr-git-graph.
   - `diff.js`: loading diffs, `showInTab()`, and the diff tab with its one-
-    and two-column views.
+    and two-column views and its image rows.
   - `menu.js`: menus.
   - `git.js`: parsing, `fileTree()` (folders first, single-folder chains
-    merged, folded paths skipped), `splitRows()` (removed and added lines
-    paired by position inside a block), and every argv. No Herdr imports, so
-    `node` can test it.
+    merged, folded paths skipped, each folder's staged state), `splitRows()`
+    (removed and added lines paired by position inside a block),
+    `diffRows()` (including `img` rows) and `imageSides()` (where an image's
+    old and new bytes come from), and every argv. No Herdr imports, so `node`
+    can test it.
 - **Menus.** A menu can't run git itself: a popup's tasks end when it closes.
   It posts `setShared("git-changes.pick", { owner, id, at })`, and the panel
   whose `owner` id matches runs the action it remembered under that id.
@@ -250,10 +300,11 @@ hint in 11px `dim`. Danger items are `ansi1`.
   - Every action is an argv list in `git.js`.
 - **Herdr:** `spaces`, `panes`, `focused`, `exec`, `readTextFile`,
   `watchFolder`, `theme`, `settings`, `notify`, `shared`, `setShared`,
-  `openOverlay`, `closeOverlay`, `props`, and `run` for `tab.new`,
-  `tab.rename`, `tab.select`, `tab.close`.
+  `openOverlay`, `closeOverlay`, `props`, `appHome`, `window` (the platform),
+  `fs/promises` (`exists`, `mkdir`, `readFile`, `readdir`, `unlink`), and `run`
+  for `tab.new`, `tab.rename`, `tab.select`, `tab.close`.
 - **gpui:** `TextareaState` and `Textarea`, `v_virtual_list`, `Scrollbar`,
-  `PathBuilder` with `window.paint_path`, and `write_to_clipboard`.
+  `image`, `PathBuilder` with `window.paint_path`, and `write_to_clipboard`.
 - **Art:** Lucide icons in `icons/` (ISC). Most come from herdr-git-graph;
   `chevron-*` come from Herdr's Files panel.
 
@@ -265,8 +316,17 @@ hint in 11px `dim`. Danger items are `ansi1`.
 - **Popup tasks are cancelled on close**, so actions run in the panel, not the
   menu.
 - **Virtual-list rows can't hold their own handlers.** Use `on_item_click` and
-  `on_item_secondary_click` on the list. Take the click count from an
-  `on_mouse_down` on a wrapper.
+  `on_item_secondary_click` on the list. Take the click count, and for the
+  Changes list the click's x position, from an `on_mouse_down` on a wrapper
+  (`local_position` and `bounds`, divided by the zoom). Never use `on_hover` plus
+  `cx.notify()` on rows to show buttons: every pointer move re-rendered the
+  whole list, which froze the panel at a few hundred files. Herdr has no
+  group-hover, so a row's buttons stay visible and change colour under the
+  pointer on their own.
+- **`image()` loads only from Herdr's folder**, and `herdr-app check` doesn't load
+  it, so a wrong path shows as an empty box. Copy the bytes under
+  `data/git-changes/preview/` first. `exec` returns text, so git blobs can't
+  come back through it: write them to a file inside `sh -c`.
 - **`paint_path` takes raw pixels** while elements are zoomed. Multiply the
   path's coordinates by `settings().zoom`.
 - **Rows must be a whole number of screen pixels.** Round `24 × zoom` and
@@ -286,6 +346,7 @@ hint in 11px `dim`. Danger items are `ansi1`.
   `herdr-app check` refuses paths outside its folder.
 - **Limits:**
   - 1,000 changed files.
+  - Images: 10 MB each, the first 20 of a diff, this computer only.
   - 5,000 diff lines; an untracked file shows its first 3,000 lines.
   - Lines past 4,000 characters are cut.
   - Whole-file staging only; renames show as a delete and an add.
@@ -300,13 +361,24 @@ hint in 11px `dim`. Danger items are `ansi1`.
   Herdr's own read-only `main.json`, or nothing.
 - `node tests/git.test.mjs` passes. It runs every action against throwaway
   repositories with a bare remote.
+- `node tests/rows.test.mjs` passes. It checks the row model, where a click
+  lands in each row, and image sizes.
 - `node tests/ui.test.mjs` passes. It renders the panel and the diff tab,
-  every row included, and clicks through them.
+  every row included, refuses handlers inside list rows, and clicks through
+  them.
 - Clicking a file opens a tab in the main area named after it, showing its
   diff. Clicking another file renames and reuses that tab. After closing it,
   the next click opens a new one.
 - The Two-columns pair shows `Before | After`. A block of 2 removed and 1 added
   lines makes 2 rows: the first pairs, the second has an empty right side.
+- In a worktree with 300 changed files, scrolling and moving the pointer over
+  rows is smooth, and a render builds about two thousand elements, not
+  thirty thousand. Hovering a row only tints it.
+- Right-click a file or a folder: Open folder shows that folder in the file
+  manager, Open in terminal starts a tab in it.
+- Click a changed PNG: the tab shows Before and After, stacked in one column,
+  side by side in two columns. An untracked PNG shows only After, a deleted one
+  only Before. A commit that touched a PNG shows it in History.
 - Tree shows `src/ui` merged into one row when `src` holds nothing else.
   Folding it hides its files. Flat shows each file with its folder beside it.
 - In a repository with a staged file, a partly staged file and an untracked

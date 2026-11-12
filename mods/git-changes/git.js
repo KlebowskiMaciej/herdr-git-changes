@@ -141,22 +141,38 @@ export function withUncommitted(commits, changes, head) {
 
 export const countLines = (text) => (text ? text.split("\n").length - Number(text.endsWith("\n")) : 0);
 
+export const IMAGE_TYPES = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"];
+export const SVG = "svg";
+export function imageType(path) {
+  const type = /\.([A-Za-z0-9]+)$/.exec(path)?.[1].toLowerCase();
+  return IMAGE_TYPES.includes(type) ? type : null;
+}
+
+const NEW_FILE = /^(new file mode|Binary files \/dev\/null and )/;
+const DELETED_FILE = /^(deleted file mode|Binary files .* and \/dev\/null differ$)/;
+
 // One row per diff line, numbered once, so a frame draws only what's on screen.
 // File headers become one "f" row each (dropped when there's a single file, unless `headers`).
+// An image file gets an "img" row, { kind: "img", path, type, change: "added" | "deleted" | "modified" },
+// right after its header, in place of "Binary file changed".
 export function diffRows(lines, { headers = false } = {}) {
   const rows = [];
-  let old = 0, next = 0, header = false, files = 0;
+  let old = 0, next = 0, header = false, files = 0, image = null;
   for (const line of lines) {
     if (line.startsWith("diff --git ") || line.startsWith("diff --cc ") || line.startsWith("diff --combined ")) {
       const m = / b\/(.*)$/.exec(line) ?? /^diff --(?:cc|combined) (.*)$/.exec(line);
       rows.push({ kind: "f", text: m ? m[1] : line });
+      image = m && imageType(m[1]) ? { kind: "img", path: m[1], type: imageType(m[1]), change: "modified", text: m[1] } : null;
+      if (image) rows.push(image);
       header = true; files++;
       continue;
     }
     const hunk = /^@@+ -(\d+)(?:,\d+)?(?: -\d+(?:,\d+)?)* \+(\d+)/.exec(line);
     if (hunk) { old = +hunk[1]; next = +hunk[2]; header = false; rows.push({ kind: "@", text: line }); continue; }
     if (header) {
-      if (line.startsWith("Binary files")) rows.push({ kind: "", text: "Binary file changed" });
+      if (image && NEW_FILE.test(line)) image.change = "added";
+      else if (image && DELETED_FILE.test(line)) image.change = "deleted";
+      if (line.startsWith("Binary files")) { if (!image) rows.push({ kind: "", text: "Binary file changed" }); }
       else if (line.startsWith("Subproject commit") || line.startsWith("-Subproject") || line.startsWith("+Subproject")) rows.push({ kind: line[0] === "-" ? "-" : line[0] === "+" ? "+" : "", text: line.replace(/^[-+]/, "") });
       continue;
     }
@@ -175,6 +191,17 @@ export function diffArgs(item, hasHead) {
   if (item.area === "commit") return [["show", "--format=", "-p", "--diff-merges=first-parent", ...DIFF, item.hash]];
   const path = item.area === "all" ? [] : ["--", item.path];
   return hasHead ? [["diff", "HEAD", ...DIFF, ...path]] : [["diff", "--cached", ...DIFF, ...path], ["diff", ...DIFF, ...path]];
+}
+
+// Where an image's old and new bytes come from: `{ revs }` (git objects, tried in
+// order) or `{ worktree }` (the file on disk); null when that side has no image.
+export function imageSides(item, { path, change }, hasHead) {
+  const revs = (...names) => ({ revs: names.map((name) => `${name}:${path}`) });
+  let before, after;
+  if (item.area === "commit") { before = revs(`${item.hash}^1`); after = revs(item.hash); }
+  else if (item.area === "stash") { before = revs(`${item.ref}^1`); after = revs(item.ref, `${item.ref}^3`); }
+  else { before = hasHead ? revs("HEAD") : null; after = { worktree: path }; }
+  return { before: change === "added" ? null : before, after: change === "deleted" ? null : after };
 }
 
 // Zed's placeholder: one changed file names the commit for you.
@@ -264,7 +291,8 @@ export function gitError(result) {
 // The changed files as a tree: folders first, sorted; a folder holding a single
 // folder and nothing else is merged into it ("src/ui"), as Zed and VS Code do.
 // `closed` holds folder paths whose children are hidden. Rows are
-// { kind: "folder", name, path, depth, files } or { kind: "file", entry, depth }.
+// { kind: "folder", name, path, depth, files, staged } (`staged`: "all", "some" or
+// "none" over everything inside) or { kind: "file", entry, depth }.
 export function fileTree(entries, closed = new Set()) {
   const root = { dirs: new Map(), files: [] };
   for (const entry of entries) {
@@ -278,13 +306,21 @@ export function fileTree(entries, closed = new Set()) {
     }
     node.files.push(entry);
   }
-  const count = (node) => node.files.length + [...node.dirs.values()].reduce((n, d) => n + count(d), 0);
+  const summarize = (node) => {
+    const total = { files: 0, staged: 0, touched: 0 };
+    for (const e of node.files) { total.files++; total.staged += Number(e.staged === "all"); total.touched += Number(e.staged !== "none"); }
+    for (const d of node.dirs.values()) { const s = summarize(d); total.files += s.files; total.staged += s.staged; total.touched += s.touched; }
+    node.total = total;
+    return total;
+  };
+  summarize(root);
+  const stagedState = ({ files, staged, touched }) => (staged === files ? "all" : touched ? "some" : "none");
   const rows = [];
   const walk = (node, depth) => {
     for (const dir of [...node.dirs.values()].sort((a, b) => a.name.localeCompare(b.name))) {
       let d = dir, name = dir.name;
       while (d.files.length === 0 && d.dirs.size === 1) { d = [...d.dirs.values()][0]; name = `${name}/${d.name}`; }
-      rows.push({ kind: "folder", name, path: d.path, depth, files: count(d) });
+      rows.push({ kind: "folder", name, path: d.path, depth, files: d.total.files, staged: stagedState(d.total) });
       if (!closed.has(d.path)) walk(d, depth + 1);
     }
     for (const entry of [...node.files].sort((a, b) => a.path.localeCompare(b.path))) rows.push({ kind: "file", entry, depth });

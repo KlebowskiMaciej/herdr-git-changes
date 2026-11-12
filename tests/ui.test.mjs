@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
+import { png, svgText } from "./fixtures.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url)), modDir = join(here, "../mods/git-changes");
 // realpathSync: on macOS the temp folder is a symlink, and git reports the real path.
@@ -19,20 +20,28 @@ const base = realpathSync(mkdtempSync(join(tmpdir(), "herdr-git-changes-ui-")));
 const lib = join(base, "mod");
 mkdirSync(lib);
 for (const f of readdirSync(modDir).filter((f) => f.endsWith(".js")))
-  writeFileSync(join(lib, f), readFileSync(join(modDir, f), "utf8").replace(/from "(gpui-kit|gpui-base|herdr)"/g, 'from "./_stub.js"'));
+  writeFileSync(join(lib, f), readFileSync(join(modDir, f), "utf8").replace(/from "(gpui-kit|gpui-base|herdr)"/g, 'from "./_stub.js"').replace(/from "fs\/promises"/g, 'from "./_fs.js"'));
+writeFileSync(join(lib, "_fs.js"), `
+import * as fs from "node:fs/promises";
+export const exists = (p) => fs.access(p).then(() => true, () => false);
+export const { mkdir, readFile, readdir, unlink } = fs;
+`);
 writeFileSync(join(lib, "_stub.js"), `
 const H = globalThis.__herdr;
 // Every element is a node that records its children, text and handlers; any builder call chains.
+// Like Herdr, it refuses a handler registered while a virtual list's renderer runs.
 function el(kind) {
   const node = { kind, kids: [], items: null, handlers: {}, props: {} };
   const proxy = new Proxy(node, { get(t, k) {
     if (Object.prototype.hasOwnProperty.call(t, k)) return t[k];
     if (k === "then") return undefined;
+    H.calls++;
     if (k === "child") return (c) => { t.kids.push(c); return proxy; };
     if (k === "children") return (cs) => { t.kids.push(...cs); return proxy; };
     if (k === "when") return (b, f) => (b ? f(proxy) ?? proxy : proxy);
     return (...a) => {
       if (k === "id") t.id = a[0];
+      if (k.startsWith("on_") && H.rendering) throw new Error("a handler (" + k + ") inside a virtual list renderer");
       if (k.startsWith("on_")) t.handlers[k.slice(3) + (typeof a[0] === "string" && a.length > 1 ? ":" + a[0] : "")] = a.at(-1);
       if (k === "hover") a[0](proxy);
       t.props[k] = a;
@@ -43,20 +52,29 @@ function el(kind) {
 }
 export class View {}
 export const div = () => el("div"), svg = (p) => { const e = el("svg"); e.props.path = [p]; return e; };
+export const image = (p) => { const e = el("image"); e.props.path = [p]; return e; };
 export const v_flex = () => el("v"), h_flex = () => el("h");
 export const PathBuilder = { stroke: () => { const b = { move_to: () => b, line_to: () => b, cubic_bezier_to: () => b, dash_array: () => b, build: () => ({}) }; return b; } };
 globalThis.window = { paint_path: () => el("path") };
-// A virtual list draws every row at once here, so every row's code runs.
-export function v_virtual_list(id, count, _h, key, render) { const e = el("list"); e.id = id; e.items = render({ start: 0, end: count }, H.cx()); e.keys = Array.from({ length: count }, (_, i) => key(i)); return e; }
+// A virtual list draws every row at once here (or the first H.visibleRows), so every row's code runs.
+export function v_virtual_list(id, count, sizes, key, render) {
+  const e = el("list"); e.id = id; e.sizes = sizes;
+  H.rendering = true;
+  try { e.items = render({ start: 0, end: Math.min(count, H.visibleRows) }, H.cx()); } finally { H.rendering = false; }
+  e.keys = Array.from({ length: count }, (_, i) => key(i));
+  return e;
+}
 export const Scrollbar = { vertical: () => el("bar") };
 const state = () => ({ v: "", value() { return this.v; }, set_value(v) { this.v = v; }, on() {}, focus() {}, set_auto_grow() {}, set_selected_range() {} });
 export const InputState = { new: state }, TextareaState = { new: state };
 export const Input = { new: () => el("input") }, Textarea = { new: () => el("textarea") };
-export const spaces = () => H.spaces, panes = () => H.panes, focused = () => H.focused, layout = () => ({});
+export const spaces = () => { H.hostCalls++; return H.spaces; }, panes = () => H.panes, focused = () => H.focused, layout = () => ({});
+export const window = () => ({ platform: H.platform });
+export const appHome = () => H.appHome;
 export const theme = () => new Proxy({}, { get: (_t, k) => "#" + String(k).padEnd(6, "0").slice(0, 6) });
 export const settings = () => ({ zoom: 1, font_family: "Mono" });
 export const props = () => H.props();
-export const shared = (k) => H.shared[k];
+export const shared = (k) => { H.hostCalls++; return H.shared[k]; };
 export const setShared = (k, v) => { H.shared[k] = v; return null; };
 export const run = (name, args) => { H.runs.push([name, args]); return null; };
 export const notify = (n) => { H.notes.push(n); return ""; };
@@ -71,10 +89,12 @@ export const nextCommand = () => new Promise(() => {});
 globalThis.localStorage = { m: {}, getItem(k) { return this.m[k] ?? null; }, setItem(k, v) { this.m[k] = String(v); } };
 const env = { ...process.env, GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@t", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
 const tasks = [];
+const OPENERS = ["xdg-open", "open", "explorer"];
 const H = globalThis.__herdr = {
   spaces: [], panes: [], focused: null, shared: {}, runs: [], notes: [], overlays: [], currentProps: {},
+  calls: 0, hostCalls: 0, rendering: false, visibleRows: Infinity, platform: "linux", appHome: join(base, "app-home"), execs: [],
   props: () => H.currentProps,
-  exec: async (cmd, args, { cwd }) => { const r = spawnSync(cmd, args, { cwd, env, encoding: "utf8" }); return { code: r.status, stdout: r.stdout, stderr: r.stderr }; },
+  exec: async (cmd, args, { cwd }) => { H.execs.push([cmd, args]); if (OPENERS.includes(cmd)) return { code: 0, stdout: "", stderr: "" }; const r = spawnSync(cmd, args, { cwd, env, encoding: "utf8" }); return { code: r.status, stdout: r.stdout, stderr: r.stderr }; },
   read: async (p) => { try { return readFileSync(p, "utf8"); } catch { return null; } },
   cx: () => cx,
 };
@@ -82,7 +102,7 @@ const timers = [];
 const cx = {
   spawn: (fn) => { const p = Promise.resolve().then(() => fn(cx)); tasks.push(p); return p; },
   timer: { every: (_ms, fn) => { timers.push(fn); }, after: () => {} },
-  notify() {}, stop_propagation() {}, write_to_clipboard(t) { H.clipboard = t; }, focus_handle: () => ({ focus() {} }),
+  notify() { cx.count = (cx.count ?? 0) + 1; }, stop_propagation() {}, write_to_clipboard(t) { H.clipboard = t; }, focus_handle: () => ({ focus() {} }),
 };
 // Waits until git has answered: every task that can finish has. Folder watches never do, so each
 // task gets at most a short while, and settling stops once no new tasks appear.
@@ -104,6 +124,19 @@ const texts = (tree) => walk(tree).flatMap((n) => n.kids.filter((c) => typeof c 
 const byId = (tree, id) => walk(tree).find((n) => n.id === id);
 const click = (tree, id) => { const n = byId(tree, id); assert.ok(n, `no element #${id}`); n.handlers.click({ click_count: 1 }, cx); };
 
+// A virtual list's rows hold no handlers: the press says where in the list it landed, then the list names the row.
+const LIST_WIDTH = 400;
+const listOf = (tree) => walk(tree).find((n) => n.kind === "list" && n.id === panel.listId);
+const clickRow = (tree, key, zone = null) => {
+  const row = panel.rowsModel().byKey.get(key);
+  assert.ok(row, `no row ${key}`);
+  const x = zone ? zoneCenter(row, zone, LIST_WIDTH) : 150;
+  byId(tree, "git-changes-rows").handlers["mouse_down:left"]({ local_position: { x, y: 10 }, bounds: { x: 0, y: 0, width: LIST_WIDTH, height: 600 }, click_count: 1 }, cx);
+  const list = listOf(tree);
+  assert.ok(list.keys.includes(key), `the list has no row ${key}`);
+  list.handlers.item_click(key, cx);
+};
+
 // --- a repository ---------------------------------------------------------------
 
 const repo = join(base, "repo");
@@ -122,6 +155,7 @@ H.focused = { space: "sp1", tab: "tb1", pane: "p1", terminal: "t1", cwd: repo };
 const { Panel } = await import(pathToFileURL(join(lib, "panel.js")).href);
 const { DiffView } = await import(pathToFileURL(join(lib, "diff.js")).href);
 const { Menu } = await import(pathToFileURL(join(lib, "menu.js")).href);
+const { zoneCenter } = await import(pathToFileURL(join(lib, "rows.js")).href);
 
 // Exercise the popup's real confirmation and shared-pick protocol, not its callbacks.
 const chooseMenu = (overlay, label) => {
@@ -156,15 +190,15 @@ await test("the panel reads the repository and renders the tree", async () => {
   assert.ok(all.includes("src"), "the src folder");
   assert.ok(all.includes("ui"), "the ui folder under src");
   assert.ok(all.includes("app.ts") && all.includes("list.ts") && all.includes("usage.md"), "files");
-  assert.ok(byId(tree, "folder-tracked:src"), "a folder row with its own id");
+  assert.ok(byId(tree, "row-folder:tracked:src"), "a folder row with its own id");
 });
 
 await test("folding a folder hides what's in it, only in that group", async () => {
-  click(panel.render(cx), "folder-tracked:src");
+  clickRow(panel.render(cx), "folder:tracked:src");
   let all = texts(panel.render(cx));
   assert.ok(!all.includes("app.ts") && !all.includes("list.ts"), "src's files hidden");
   assert.ok(all.includes("usage.md"), "the other group untouched");
-  click(panel.render(cx), "folder-tracked:src");
+  clickRow(panel.render(cx), "folder:tracked:src");
   all = texts(panel.render(cx));
   assert.ok(all.includes("app.ts"), "unfolded again");
 });
@@ -173,14 +207,14 @@ await test("Flat lists every file with its folder beside it", async () => {
   click(panel.render(cx), "list-flat");
   const tree = panel.render(cx), all = texts(tree);
   assert.equal(panel.listMode, "flat");
-  assert.ok(!byId(tree, "folder-tracked:src"), "no folder rows");
+  assert.ok(!byId(tree, "row-folder:tracked:src"), "no folder rows");
   assert.ok(all.includes("src/ui") && all.includes("list.ts"), "folder shown beside the name");
   click(tree, "list-tree");
   assert.equal(panel.listMode, "tree");
 });
 
 await test("a folder's checkbox stages everything inside it", async () => {
-  byId(panel.render(cx), "stage-dir-tracked:src").handlers.click({}, cx);
+  clickRow(panel.render(cx), "folder:tracked:src", "stage");
   await settle();
   const staged = git("diff", "--cached", "--name-only").trim().split("\n").sort();
   assert.deepEqual(staged, ["src/app.ts", "src/ui/list.ts"]);
@@ -191,7 +225,7 @@ await test("a folder's checkbox stages everything inside it", async () => {
 let diff;
 await test("clicking a file opens one diff tab in the main area", async () => {
   H.runs = [];
-  click(panel.render(cx), "row-src/app.ts");
+  clickRow(panel.render(cx), "file:src/app.ts");
   const opened = H.runs.find(([n]) => n === "tab.new");
   assert.ok(opened, "tab.new ran");
   assert.equal(opened[1].mod, "git-changes");
@@ -233,7 +267,7 @@ await test("the panel keeps its repository while the diff tab has the focus", as
 
 await test("picking another file reuses the tab and renames it", async () => {
   H.runs = [];
-  click(panel.render(cx), "row-docs/usage.md");
+  clickRow(panel.render(cx), "file:docs/usage.md");
   assert.ok(!H.runs.some(([n]) => n === "tab.new"), "no second tab");
   assert.deepEqual(H.runs.filter(([n]) => n !== "layout.select").map(([n, a]) => [n, a.id, a.name ?? null]), [["tab.rename", "tb2", "usage.md"], ["tab.select", "tb2", null]]);
   diff.render(cx); // the tab re-renders when shared state changes; that's when it sees the pick
@@ -247,7 +281,7 @@ await test("closing the tab, then picking again, makes a new one", async () => {
   H.spaces[0].tabs = H.spaces[0].tabs.filter((t) => t.id !== "tb2"); H.panes = H.panes.filter((p) => p.tab !== "tb2");
   H.focused = { space: "sp1", tab: "tb1", pane: "p1", terminal: "t1", cwd: repo };
   H.runs = [];
-  click(panel.render(cx), "row-src/app.ts");
+  clickRow(panel.render(cx), "file:src/app.ts");
   assert.ok(H.runs.some(([n]) => n === "tab.new"));
 });
 
@@ -382,6 +416,229 @@ await test("a running commit keeps its target but cannot clear a later context's
     assert.equal(target.cwd, repo, "already-started work stays in A");
     assert.equal(panel.editor.value(), "new draft", "the old completion cannot clear the new draft");
   } finally { H.exec = realExec; }
+});
+
+
+// --- hovering, clicking and what a render costs --------------------------------------
+
+const bigRepo = join(base, "big");
+const bigGit = (...a) => execFileSync("git", a, { cwd: bigRepo, env, encoding: "utf8" });
+const buildBigRepo = (files) => {
+  mkdirSync(bigRepo, { recursive: true });
+  bigGit("init", "-q", "-b", "main");
+  writeFileSync(join(bigRepo, "seed.txt"), "s\n"); bigGit("add", "."); bigGit("commit", "-qm", "seed");
+  for (let i = 0; i < files; i++) { const dir = join(bigRepo, `pkg${i % 20}/sub${i % 3}`); mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, `f${i}.ts`), "x\n"); }
+};
+const rendered = (fn) => { H.calls = 0; H.hostCalls = 0; const tree = fn(); return { tree, calls: H.calls, hostCalls: H.hostCalls }; };
+
+await test("hovering a row re-renders nothing: no row listens for hover, and its highlight is native styling", async () => {
+  panel.setTab("changes", cx);
+  H.currentProps = { folder: repo };
+  panel.refresh(cx); await settle();
+  const tree = panel.render(cx);
+  assert.deepEqual(walk(tree).filter((n) => n.handlers.hover).map((n) => n.id), [], "no on_hover handler anywhere in the panel");
+  const row = byId(tree, "in-file:src/app.ts");
+  assert.ok(row.props.hover, "the row is highlighted by the pointer natively");
+  assert.ok(byId(tree, "discard-src/app.ts"), "the discard button is part of the row, not swapped in on hover");
+});
+
+await test("a render draws the visible rows only, so it costs the same for 3 files and for 300", async () => {
+  buildBigRepo(300);
+  H.visibleRows = 30;
+  try {
+    H.currentProps = { folder: repo };
+    panel.refresh(cx); await settle();
+    const small = rendered(() => panel.render(cx));
+    H.currentProps = { folder: bigRepo };
+    panel.refresh(cx); await settle();
+    assert.equal(panel.entries.length, 300);
+    const big = rendered(() => panel.render(cx));
+    assert.equal(listOf(big.tree).keys.length > 300, true, "the list still knows every row, folders included");
+    assert.equal(listOf(big.tree).items.length, 30, "only the visible rows are described");
+    assert.ok(big.calls < small.calls * 3 && big.calls < 4000, `${big.calls} builder calls for 300 files, ${small.calls} for the small repository`);
+    assert.ok(big.hostCalls <= 6, `${big.hostCalls} host reads in one render`);
+  } finally { H.visibleRows = Infinity; H.currentProps = { folder: repo }; panel.refresh(cx); await settle(); }
+});
+
+await test("a refresh that finds nothing new redraws nothing", async () => {
+  H.currentProps = { folder: repo };
+  panel.refresh(cx); await settle();
+  const before = cx.count;
+  panel.refresh(cx); await settle();
+  panel.refresh(cx); await settle();
+  assert.ok(cx.count - before <= 1, `${cx.count - before} redraws for two refreshes of an unchanged repository`);
+});
+
+await test("a click on a file's checkbox stages it; on its trash button, it asks first; elsewhere, it opens the diff", async () => {
+  H.currentProps = { folder: repo };
+  git("reset", "-q"); panel.refresh(cx); await settle();
+  clickRow(panel.render(cx), "file:src/app.ts", "stage"); await settle();
+  assert.equal(git("diff", "--cached", "--name-only", "--", "src/app.ts").trim(), "src/app.ts");
+  clickRow(panel.render(cx), "file:src/app.ts", "stage"); await settle();
+  assert.equal(git("diff", "--cached", "--name-only", "--", "src/app.ts").trim(), "");
+  const before = readFileSync(join(repo, "src/app.ts"), "utf8");
+  clickRow(panel.render(cx), "file:src/app.ts", "discard");
+  assert.equal(readFileSync(join(repo, "src/app.ts"), "utf8"), before, "the first click only arms the button");
+  assert.ok(texts(panel.render(cx)).includes("Sure?"), "the row asks");
+  assert.equal(panel.render(cx) && byId(panel.render(cx), "discard-src/app.ts").props.tooltip[0], "Click again to confirm");
+  H.runs = [];
+  clickRow(panel.render(cx), "file:src/app.ts");
+  assert.ok(H.runs.some(([n]) => n === "tab.new" || n === "tab.select"), "the body opens the diff");
+  panel.armed = null;
+});
+
+await test("a section's checkbox stages its group and its title folds it", async () => {
+  H.currentProps = { folder: repo };
+  git("reset", "-q"); panel.refresh(cx); await settle();
+  clickRow(panel.render(cx), "section:tracked", "stage"); await settle();
+  assert.deepEqual(git("diff", "--cached", "--name-only").trim().split("\n").sort(), ["src/app.ts", "src/ui/list.ts"]);
+  git("reset", "-q"); panel.refresh(cx); await settle();
+  clickRow(panel.render(cx), "section:tracked");
+  assert.ok(!texts(panel.render(cx)).includes("app.ts"), "the tracked group is folded");
+  clickRow(panel.render(cx), "section:tracked");
+  assert.ok(texts(panel.render(cx)).includes("app.ts"), "and unfolded again");
+});
+
+// --- opening a folder ------------------------------------------------------------------
+
+await test("a file's menu opens its folder in the file manager and in a terminal tab", async () => {
+  H.currentProps = { folder: repo };
+  panel.refresh(cx); await settle();
+  H.execs = []; H.runs = [];
+  panel.fileMenu(panel.entries.find((e) => e.path === "src/ui/list.ts"), cx);
+  const menu = H.overlays.at(-1);
+  assert.ok(menu.props.items.some((i) => i.label === "Open folder" && !i.disabled), "Open folder is offered");
+  chooseMenu(menu, "Open folder");
+  panel.render(cx); await settle();
+  assert.deepEqual(H.execs.find(([c]) => OPENERS.includes(c)), ["xdg-open", [join(repo, "src/ui")]]);
+  panel.fileMenu(panel.entries.find((e) => e.path === "src/ui/list.ts"), cx);
+  chooseMenu(H.overlays.at(-1), "Open in terminal");
+  panel.render(cx); await settle();
+  assert.deepEqual(H.runs.find(([n]) => n === "tab.new"), ["tab.new", { space: "sp1", folder: join(repo, "src/ui"), name: "ui" }]);
+});
+
+await test("a file in the repository's root opens the root; a folder row opens that folder", async () => {
+  H.currentProps = { folder: repo };
+  panel.refresh(cx); await settle();
+  H.execs = [];
+  panel.fileMenu({ path: "README.md", staged: "none", status: "M" }, cx);
+  chooseMenu(H.overlays.at(-1), "Open folder");
+  panel.render(cx); await settle();
+  assert.deepEqual(H.execs.find(([c]) => OPENERS.includes(c))[1], [repo]);
+  H.execs = [];
+  panel.folderMenu(panel.rowsModel().byKey.get("folder:tracked:src"), cx);
+  assert.ok(H.overlays.at(-1).props.items.some((i) => i.label === "Copy full path" && i.copy === join(repo, "src")));
+  chooseMenu(H.overlays.at(-1), "Open folder");
+  panel.render(cx); await settle();
+  assert.deepEqual(H.execs.find(([c]) => OPENERS.includes(c))[1], [join(repo, "src")]);
+});
+
+await test("right-clicking a folder row opens its menu; stage folder stages what's inside", async () => {
+  H.currentProps = { folder: repo };
+  git("reset", "-q"); panel.refresh(cx); await settle();
+  listOf(panel.render(cx)).handlers.item_secondary_click("folder:tracked:src", {}, cx);
+  assert.equal(H.overlays.at(-1).props.items[0].label, "Stage folder");
+  chooseMenu(H.overlays.at(-1), "Stage folder");
+  panel.render(cx); await settle();
+  assert.deepEqual(git("diff", "--cached", "--name-only").trim().split("\n").sort(), ["src/app.ts", "src/ui/list.ts"]);
+  git("reset", "-q"); panel.refresh(cx); await settle();
+});
+
+await test("on another machine, Open folder is off but a terminal tab still opens", async () => {
+  H.currentProps = { folder: repo, on: "machine-a" };
+  panel.refresh(cx); await settle();
+  panel.fileMenu(panel.entries.find((e) => e.path === "src/app.ts"), cx);
+  const open = H.overlays.at(-1).props.items.find((i) => i.label === "Open folder");
+  assert.equal(open.disabled, true);
+  H.currentProps = { folder: repo };
+  panel.refresh(cx); await settle();
+});
+
+// --- images ----------------------------------------------------------------------------
+
+const picRepo = join(base, "pics");
+const picGit = (...a) => execFileSync("git", a, { cwd: picRepo, env, encoding: "utf8" });
+const pic = (name, bytes) => writeFileSync(join(picRepo, name), bytes);
+mkdirSync(join(picRepo, "art"), { recursive: true });
+picGit("init", "-q", "-b", "main");
+pic("art/hero.png", png(4, 3, [200, 0, 0])); pic("art/old.png", png(2, 2, [0, 0, 200])); pic("art/logo.svg", svgText(10, 10)); pic("notes.txt", "n\n");
+picGit("add", "."); picGit("commit", "-qm", "art");
+pic("art/hero.png", png(8, 6, [0, 200, 0])); pic("art/logo.svg", svgText(20, 10)); rmSync(join(picRepo, "art/old.png")); pic("art/new.png", png(5, 5, [9, 9, 9]));
+
+const openDiff = async (item) => {
+  const saved = H.currentProps;
+  H.shared["git-changes.view"] = { sp1: { item, source: { root: picRepo, on: null }, at: Date.now(), tab: "tb9" } };
+  H.currentProps = { role: "diff", space: "sp1" };
+  const view = new DiffView(); view.init(cx); await settle();
+  H.currentProps = saved;
+  return view;
+};
+const pictures = (tree) => walk(tree).filter((n) => n.kind === "image").map((n) => n.props.path[0]);
+
+await test("an image's diff shows the new picture, the old one and what changed, for every kind of change", async () => {
+  const view = await openDiff({ area: "all" });
+  const rows = view.rows.filter((r) => r.kind === "img");
+  assert.deepEqual(rows.map((r) => [r.path, r.change]), [["art/hero.png", "modified"], ["art/logo.svg", "modified"], ["art/old.png", "deleted"], ["art/new.png", "added"]]);
+  const tree = view.render(cx), shown = pictures(tree);
+  assert.equal(shown.length, 6, "hero and logo before and after, new after, old before");
+  for (const src of shown) { assert.match(src, /^data\/git-changes\/preview\/.+\.(png|svg)$/); assert.ok(readFileSync(join(H.appHome, src)).length > 0, `${src} was copied under the app's folder`); }
+  const all = texts(tree);
+  assert.ok(all.includes("Before") && all.includes("After"));
+  assert.ok(all.includes("4 × 3 · " + all.find((t) => t.startsWith("4 × 3 · ")).slice(8)), "the old size");
+  assert.ok(all.some((t) => t.startsWith("8 × 6")), "the new size");
+  assert.ok(!all.includes("Added: no image before"), "one column: an added image shows only its After cell");
+  H.shared["git-changes.layout"] = "split";
+  const split = texts(view.render(cx));
+  H.shared["git-changes.layout"] = "unified";
+  assert.ok(split.includes("Added: no image before") && split.includes("Deleted: no image after"), "two columns: the empty side says why");
+  assert.equal(pictures(view.render(cx)).length, 6);
+});
+
+await test("a single image diff in one column stacks before over after; in two columns it sits side by side", async () => {
+  const view = await openDiff({ area: "file", path: "art/hero.png", status: "M", staged: "none" });
+  view.bodyWidth = 800; view.bodyHeight = 600; view.imageVersion++;
+  const stacked = walk(view.render(cx)).find((n) => n.kind === "list");
+  const side = (layout) => { H.shared["git-changes.layout"] = layout; const tree = view.render(cx); return { tree, list: walk(tree).find((n) => n.kind === "list") }; };
+  assert.equal(stacked.items.length, 1, "one row for the one image");
+  assert.equal(pictures(view.render(cx)).length, 2);
+  const one = side("unified"), two = side("split");
+  assert.ok(one.list.sizes[0] > two.list.sizes[0], "stacked is taller than side by side");
+  assert.ok(texts(two.tree).includes("Before") && texts(two.tree).includes("After"));
+  H.shared["git-changes.layout"] = "unified";
+});
+
+await test("an untracked image shows only the new picture", async () => {
+  const view = await openDiff({ area: "file", path: "art/new.png", untracked: true, status: "A", staged: "none" });
+  assert.equal(pictures(view.render(cx)).length, 1);
+  assert.ok(texts(view.render(cx)).includes("After"));
+});
+
+await test("a deleted image shows the old picture", async () => {
+  const view = await openDiff({ area: "file", path: "art/old.png", status: "D", staged: "none" });
+  assert.equal(pictures(view.render(cx)).length, 1);
+  assert.ok(texts(view.render(cx)).includes("Before"));
+});
+
+await test("in History, a commit that touches images shows them, and so does a stash", async () => {
+  picGit("add", "-A"); picGit("commit", "-qm", "new art");
+  const hash = picGit("rev-parse", "HEAD").trim();
+  const commit = await openDiff({ area: "commit", hash, short: hash.slice(0, 7), subject: "new art" });
+  assert.equal(pictures(commit.render(cx)).length, 6);
+  pic("art/hero.png", png(3, 3, [1, 2, 3])); pic("art/extra.png", png(6, 6, [5, 5, 5]));
+  picGit("stash", "push", "--include-untracked", "-m", "wip");
+  const stash = await openDiff({ area: "stash", ref: "stash@{0}", subject: "wip" });
+  assert.equal(stash.imageRows.length, 2);
+  assert.equal(pictures(stash.render(cx)).length, 3, "hero before and after, extra from the stash's untracked commit");
+});
+
+await test("an image too large to preview says so instead of loading", async () => {
+  const { previewSide } = await import(pathToFileURL(join(lib, "images.js")).href);
+  const big = Buffer.alloc(11 * 1024 * 1024, 1);
+  writeFileSync(join(picRepo, "huge.png"), big);
+  const result = await previewSide({ worktree: "huge.png" }, "png", { root: picRepo, on: null });
+  assert.match(result.error, /Too large to preview \(11\.0 MB\)/);
+  assert.equal((await previewSide({ worktree: "huge.png" }, "png", { root: picRepo, on: "machine-a" })).error, "Image preview works on this computer only");
+  assert.equal(await previewSide(null, "png", { root: picRepo, on: null }), null);
 });
 
 rmSync(base, { recursive: true, force: true });

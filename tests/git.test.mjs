@@ -92,6 +92,46 @@ test("diffRows numbers lines and keeps file headers when asked", () => {
   assert.equal(G.diffRows(lines, { headers: true })[0].kind, "f");
 });
 
+test("image files get an image row in place of 'Binary file changed': modified, added, deleted, and an SVG with its text", () => {
+  const r = repo("images");
+  write(r, "keep.png", Buffer.from([137, 80, 78, 71, 1])); write(r, "gone.gif", Buffer.from("GIF89a\0\0\0\0")); write(r, "logo.svg", "<svg>\n</svg>\n"); write(r, "blob.bin", Buffer.from([0, 1, 2]));
+  run(r, ["add", "."]); run(r, ["commit", "-qm", "init"]);
+  write(r, "keep.png", Buffer.from([137, 80, 78, 71, 2, 3])); rmSync(join(r, "gone.gif")); write(r, "logo.svg", "<svg>\n<g/>\n</svg>\n");
+  write(r, "blob.bin", Buffer.from([0, 9])); write(r, "fresh.webp", Buffer.from("RIFF")); run(r, ["add", "fresh.webp"]);
+  const rows = G.diffRows(run(r, G.diffArgs({ area: "all" }, true)[0]).split("\n"), { headers: true });
+  const images = rows.filter((x) => x.kind === "img");
+  assert.deepEqual(images.map((x) => [x.path, x.type, x.change]), [["fresh.webp", "webp", "added"], ["gone.gif", "gif", "deleted"], ["keep.png", "png", "modified"], ["logo.svg", "svg", "modified"]]);
+  const at = (path) => rows.findIndex((x) => x.kind === "img" && x.path === path);
+  assert.equal(rows[at("keep.png") - 1].text, "keep.png", "the image row follows its file header");
+  assert.equal(rows.filter((x) => x.text === "Binary file changed").length, 1, "only the non-image binary keeps the plain row");
+  assert.ok(rows[at("logo.svg") + 1].kind === "@", "an SVG's text diff still follows its picture");
+  assert.ok(G.diffRows(run(r, G.diffArgs({ area: "file", path: "keep.png" }, true)[0]).split("\n")).some((x) => x.kind === "img"), "a single file's diff keeps its image row without a header");
+});
+
+test("where each side of an image comes from, by what is being shown", () => {
+  const row = (change) => ({ path: "a/b.png", change });
+  assert.deepEqual(G.imageSides({ area: "file" }, row("modified"), true), { before: { revs: ["HEAD:a/b.png"] }, after: { worktree: "a/b.png" } });
+  assert.deepEqual(G.imageSides({ area: "file" }, row("added"), true), { before: null, after: { worktree: "a/b.png" } });
+  assert.deepEqual(G.imageSides({ area: "file" }, row("deleted"), true), { before: { revs: ["HEAD:a/b.png"] }, after: null });
+  assert.equal(G.imageSides({ area: "all" }, row("modified"), false).before, null, "no commit yet: nothing before");
+  assert.deepEqual(G.imageSides({ area: "commit", hash: "abc" }, row("modified"), true), { before: { revs: ["abc^1:a/b.png"] }, after: { revs: ["abc:a/b.png"] } });
+  assert.deepEqual(G.imageSides({ area: "stash", ref: "stash@{0}" }, row("added"), true), { before: null, after: { revs: ["stash@{0}:a/b.png", "stash@{0}^3:a/b.png"] } });
+});
+
+test("image types: the usual ones, in any case, and nothing else", () => {
+  for (const path of ["a.png", "a.PNG", "x/y.jpg", "a.jpeg", "a.gif", "a.webp", "a.svg", "a.bmp"]) assert.ok(G.imageType(path), path);
+  for (const path of ["a.txt", "png", "a.png.bak", "a.psd", "dir.png/readme"]) assert.equal(G.imageType(path), null, path);
+});
+
+test("the file tree knows how much of each folder is staged", () => {
+  const e = (path, staged) => ({ path, staged });
+  const rows = G.fileTree([e("a/b/x", "all"), e("a/b/y", "all"), e("a/z", "none"), e("top", "some")]);
+  const by = Object.fromEntries(rows.filter((r) => r.kind === "folder").map((r) => [r.path, r]));
+  assert.equal(by["a/b"].staged, "all"); assert.equal(by["a/b"].files, 2);
+  assert.equal(by.a.staged, "some"); assert.equal(by.a.files, 3);
+  assert.equal(G.fileTree([e("a/b/x", "none")])[0].staged, "none");
+});
+
 test("suggested message for one file", () => {
   assert.equal(G.suggestMessage([{ path: "src/y.ts", status: "M" }]), "Update y.ts");
   assert.equal(G.suggestMessage([{ path: "n.md", status: "A" }]), "Create n.md");

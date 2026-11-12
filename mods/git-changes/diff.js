@@ -14,29 +14,42 @@
 // better-changes by Tawsif Aqib (https://github.com/munza/herdr-mods, Apache-2.0):
 // replacements pair by position inside one block, never across a hunk or a
 // context line. That code isn't used here; git.js has its own splitRows().
-import { div, svg } from "gpui-kit";
+import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, v_virtual_list } from "gpui-base";
 import { exec, readTextFile, watchFolder, theme, settings, props, shared, setShared, spaces, panes, run } from "herdr";
 import * as G from "./git.js";
 import { icon } from "./menu.js";
+import { previewImage, pruneCache } from "./images.js";
+import { fitSize, formatBytes } from "./imageinfo.js";
 
 const MAX = 5000;
 const clip = (line) => (line.length > 4000 ? line.slice(0, 4000) + "… (line truncated)" : line);
 const ROW = 20, HEAD = 24;
+const MAX_IMAGES = 20, CAPTION = 22, CELL_PAD = 10, STATE_HEIGHT = 64, MANY_IMAGES_HEIGHT = 320, SPLIT_COLUMNS = 2;
 const mono = () => settings().font_family ?? "JetBrains Mono";
 
-async function untrackedLines(root, on, path) {
+const diffHeader = (path) => `diff --git a/${path} b/${path}`;
+const binaryLines = (path) => (G.imageType(path) ? [`Binary files /dev/null and b/${path} differ`] : ["Binary file · no text diff"]);
+
+async function untrackedBody(root, on, path) {
+  const type = G.imageType(path);
+  if (type && type !== G.SVG) return binaryLines(path);
   const text = await readTextFile(`${root}/${path}`, { on }).catch(() => null);
-  if (text === null) return ["Cannot preview this file (binary, too large, or unreadable)"];
-  if (text.includes("\0")) return ["Binary file · no text diff"];
+  if (text === null) return type ? binaryLines(path) : ["Cannot preview this file (binary, too large, or unreadable)"];
+  if (text.includes("\0")) return binaryLines(path);
   if (!text) return ["Empty new file"];
   const n = G.countLines(text);
   return [`@@ -0,0 +1,${n} @@`, ...text.slice(0, 400000).replace(/\n$/, "").split("\n").slice(0, 3000).map((l) => `+${l}`)];
 }
 
+async function untrackedLines(root, on, path) {
+  const lead = G.imageType(path) ? ["new file mode 100644"] : [];
+  return [...lead, ...(await untrackedBody(root, on, path))];
+}
+
 // The diff's lines, ready for G.diffRows. `untracked` lists the untracked paths an "all" diff shows too.
 export async function loadDiff(item, { root, on, hasHead, untracked = [] }) {
-  if (item.untracked) return untrackedLines(root, on, item.path);
+  if (item.untracked) return [...(G.imageType(item.path) ? [diffHeader(item.path)] : []), ...(await untrackedLines(root, on, item.path))];
   let lines = [];
   for (const args of G.diffArgs(item, hasHead)) {
     const r = await exec("git", [...G.READ, ...args], { cwd: root, on });
@@ -44,7 +57,7 @@ export async function loadDiff(item, { root, on, hasHead, untracked = [] }) {
     lines.push(...r.stdout.replace(/\n$/, "").split("\n").filter((l, i, a) => l || i < a.length - 1));
   }
   if (item.area === "all") {
-    for (const path of untracked.slice(0, 50)) lines.push(`diff --git a/${path} b/${path}`, ...(await untrackedLines(root, on, path)));
+    for (const path of untracked.slice(0, 50)) lines.push(diffHeader(path), ...(await untrackedLines(root, on, path)));
   }
   if (item.area === "file" && !lines.some((l) => l.startsWith("@@") || l.startsWith("Binary") || /^[-+ ]?Subproject/.test(l)))
     lines = [item.submodule ? `Submodule: ${item.submodule}` : item.binary ? "Binary file changed" : "No text diff available"];
@@ -82,13 +95,21 @@ export class DiffView {
   init(cx) {
     this.space = props().space;
     this.listId = `gc-diff-${Math.random().toString(36).slice(2)}`;
-    this.rows = []; this.pairs = null; this.width = 300; this.offset = 0;
+    this.width = 300; this.offset = 0; this.bodyWidth = 0; this.bodyHeight = 0; this.imageVersion = 0;
+    this.previews = new Map();
+    this.clearRows();
+    cx.spawn(async () => pruneCache());
     this.sync(cx);
     // Picks arrive through shared state, which re-renders this copy; files change under it.
     cx.timer.every(10000, (cx) => this.reload(cx));
   }
 
   entry() { return (shared("git-changes.view") ?? {})[this.space]; }
+
+  clearRows() {
+    this.rows = []; this.pairs = null; this.signature = null; this.heights = null;
+    this.imageRows = []; this.added = 0; this.removed = 0;
+  }
 
   // Record this tab's id the first time it's seen, so the panel reuses it:
   // the tab in this space holding a git-changes pane, the shown one first.
@@ -108,10 +129,10 @@ export class DiffView {
     const id = e ? `${e.at}` : null;
     if (id === this.seen) return;
     this.seen = id;
-    if (!e) { this.item = null; this.rows = []; this.pairs = null; return; }
+    if (!e) { this.item = null; this.clearRows(); return; }
     if (!e.tab) cx.spawn(async () => this.claim());
     this.item = e.item; this.root = e.source.root; this.on = e.source.on ?? null;
-    this.rows = []; this.pairs = null; this.offset = 0; this.error = null;
+    this.clearRows(); this.offset = 0; this.error = null;
     if (this.root !== this.watched && !this.on) this.watch(this.root, cx);
     this.reload(cx);
   }
@@ -130,6 +151,7 @@ export class DiffView {
     this.loading = true; this.again = false;
     const item = this.item, root = this.root, on = this.on, seen = this.seen;
     cx.spawn(async (cx) => {
+      let changed = true;
       try {
         const git = (args) => exec("git", [...G.READ, ...args], { cwd: root, on });
         const head = await git(["rev-parse", "--verify", "-q", "HEAD"]);
@@ -138,13 +160,42 @@ export class DiffView {
           const r = await git(["ls-files", "--others", "--exclude-standard", "-z"]);
           untracked = r.code === 0 ? r.stdout.split("\0").filter(Boolean) : [];
         }
-        const lines = await loadDiff(item, { root, on, hasHead: head.code === 0, untracked });
+        const hasHead = head.code === 0;
+        const lines = await loadDiff(item, { root, on, hasHead, untracked });
         if (seen !== this.seen) return;
-        this.rows = G.diffRows(lines, { headers: item.area !== "file" }); this.pairs = null;
-        this.width = Math.max(300, ...this.rows.map((r) => r.text.length * 7 + 20)); this.error = null;
+        const signature = lines.join("\n");
+        if (signature === this.signature && !this.error) { changed = false; return; }
+        this.signature = signature;
+        this.showLines(lines, item);
+        this.error = null;
+        this.loadImages(item, { root, on, hasHead }, seen, cx);
       } catch (e) { if (seen === this.seen) this.error = String(e?.message ?? e); }
       // A pick that came in meanwhile asked for another load (`again`), or changed `seen`: load it now.
-      finally { this.loading = false; cx.notify(); if (this.again || seen !== this.seen) this.reload(cx); }
+      finally { this.loading = false; if (changed) cx.notify(); if (this.again || seen !== this.seen) this.reload(cx); }
+    });
+  }
+
+  showLines(lines, item) {
+    this.rows = G.diffRows(lines, { headers: item.area !== "file" }); this.pairs = null; this.heights = null;
+    this.imageRows = this.rows.filter((r) => r.kind === "img");
+    this.added = this.rows.filter((r) => r.kind === "+").length;
+    this.removed = this.rows.filter((r) => r.kind === "-").length;
+    this.width = Math.max(300, ...this.rows.filter((r) => r.kind !== "img").map((r) => r.text.length * 7 + 20));
+  }
+
+  previewKey(item, row) { return `${item.area}:${item.ref ?? item.hash ?? ""}:${row.path}:${row.change}`; }
+
+  // Previews already known stay on screen while the next ones load, so a refresh doesn't blink.
+  loadImages(item, source, seen, cx) {
+    this.imageRows.forEach((row, i) => {
+      const key = this.previewKey(item, row);
+      row.preview = this.previews.get(key) ?? null;
+      if (i >= MAX_IMAGES) { row.preview = { limit: true }; return; }
+      cx.spawn(async (cx) => {
+        const preview = await previewImage(item, row, source);
+        if (seen !== this.seen) return;
+        this.previews.set(key, preview); row.preview = preview; this.imageVersion++; cx.notify();
+      });
     });
   }
 
@@ -161,7 +212,7 @@ export class DiffView {
   }
 
   header(t, layout) {
-    const add = this.rows.filter((r) => r.kind === "+").length, del = this.rows.filter((r) => r.kind === "-").length;
+    const add = this.added, del = this.removed;
     const what = this.item.area === "commit" ? `Commit ${this.item.short} · ${this.item.author} · ${this.item.when}`
       : this.item.area === "stash" ? `Stash ${this.item.ref}` : "Working tree and index against HEAD";
     return v_flex().flex_none().border_b(1).border_color(t.border)
@@ -207,6 +258,92 @@ export class DiffView {
     return h_flex().w_full().h(ROW).flex_none().child(side(row.left, true)).child(side(row.right, false));
   }
 
+  isStacked(row, layout) { return layout === "unified" && row.change === "modified"; }
+
+  imageBox(row, layout) {
+    const columns = layout === "split" ? SPLIT_COLUMNS : 1;
+    const width = Math.max(120, Math.floor((this.bodyWidth || 600) / columns) - 2 * CELL_PAD);
+    if (this.imageRows.length !== 1) return { width, height: MANY_IMAGES_HEIGHT };
+    const cells = this.isStacked(row, layout) ? 2 : 1;
+    return { width, height: Math.max(120, Math.floor((this.bodyHeight || 640) / cells) - CAPTION - 2 * CELL_PAD) };
+  }
+
+  imageCell(label, side, row, box) {
+    const cell = { label, side, display: null, height: STATE_HEIGHT };
+    if (!row.preview) return { ...cell, state: "loading" };
+    if (row.preview.limit) return { ...cell, state: "limit" };
+    if (!side) return { ...cell, state: "none" };
+    if (side.error) return { ...cell, state: "error" };
+    const square = Math.min(box.width, box.height);
+    const display = side.size ? fitSize(side.size, box.width, box.height) : { width: square, height: square };
+    return { ...cell, state: "ready", display, height: CAPTION + 2 * CELL_PAD + display.height };
+  }
+
+  imageCells(row, layout) {
+    const box = this.imageBox(row, layout), preview = row.preview;
+    const sides = [["Before", preview?.before], ["After", preview?.after]];
+    const single = layout === "unified" && row.change !== "modified";
+    const shown = single ? sides.filter(([label]) => label === (row.change === "added" ? "After" : "Before")) : sides;
+    return shown.map(([label, side]) => this.imageCell(label, side, row, box));
+  }
+
+  imageHeight(row, layout) {
+    const heights = this.imageCells(row, layout).map((cell) => cell.height);
+    return this.isStacked(row, layout) ? heights.reduce((sum, h) => sum + h, 0) : Math.max(...heights);
+  }
+
+  imageMessage(cell, row) {
+    if (cell.state === "loading") return "Loading image…";
+    if (cell.state === "limit") return `Only the first ${MAX_IMAGES} images are shown`;
+    if (cell.state === "error") return cell.side.error;
+    if (cell.label === "Before" && row.change === "added") return "Added: no image before";
+    if (cell.label === "After" && row.change === "deleted") return "Deleted: no image after";
+    return "Image not available here";
+  }
+
+  imageCaption(cell) {
+    const { size, bytes } = cell.side ?? {};
+    return [size ? `${size.width} × ${size.height}` : null, bytes ? formatBytes(bytes) : null].filter(Boolean).join(" · ");
+  }
+
+  imageCellView(cell, row, t, layout) {
+    const color = cell.label === "Before" ? t.ansi1 : t.ansi2;
+    const caption = h_flex().h(CAPTION).flex_none().gap(8).items_center()
+      .child(div().px(6).h(18).flex().items_center().rounded(4).bg(color + "22").text_size(11).text_color(color).child(cell.label))
+      .child(div().text_size(11).text_color(t.dim).child(this.imageCaption(cell)));
+    const picture = cell.state === "ready"
+      ? div().flex_none().w(cell.display.width).h(cell.display.height).bg(t.raised).child(image(cell.side.src).w(cell.display.width).h(cell.display.height))
+      : div().text_color(cell.state === "error" ? t.ansi1 : t.dim).child(this.imageMessage(cell, row));
+    return v_flex().flex_1().min_w(0).h(cell.height).p(CELL_PAD).when(layout === "split", (e) => e.items_center()).child(caption).child(picture);
+  }
+
+  imageRow(row, t, layout) {
+    const cells = this.imageCells(row, layout);
+    const frame = this.isStacked(row, layout) ? v_flex() : h_flex();
+    return frame.when(layout === "unified" && this.bodyWidth > 0, (e) => e.w(this.bodyWidth)).when(layout === "split" || !this.bodyWidth, (e) => e.w_full())
+      .h(this.imageHeight(row, layout)).flex_none().border_b(1).border_color(t.border)
+      .children(cells.map((cell, i) => this.imageCellView(cell, row, t, layout).when(layout === "split" && i > 0, (e) => e.border_l(1).border_color(t.border))));
+  }
+
+  rowView(row, t, layout) {
+    if (row.kind === "img") return this.imageRow(row, t, layout);
+    return layout === "split" ? this.splitRow(row, t) : this.unifiedRow(row, t);
+  }
+
+  heightsFor(rows, layout) {
+    if (this.heights?.rows === rows && this.heights.version === this.imageVersion) return this.heights.list;
+    const list = rows.map((r) => (r.kind === "f" ? HEAD : r.kind === "img" ? this.imageHeight(r, layout) : ROW));
+    this.heights = { rows, list, version: this.imageVersion };
+    return list;
+  }
+
+  measured(size, cx) {
+    const zoom = settings().zoom ?? 1, width = Math.round(size.width / zoom), height = Math.round(size.height / zoom);
+    if (width === this.bodyWidth && height === this.bodyHeight) return;
+    this.bodyWidth = width; this.bodyHeight = height; this.imageVersion++;
+    if (this.imageRows.length) cx.notify();
+  }
+
   render(cx) {
     this.sync(cx);
     const t = theme(), layout = getLayout();
@@ -214,10 +351,11 @@ export class DiffView {
     if (!this.item) return root.child(div().p(16).text_color(t.dim).child("Pick a file in Changes to see its diff here."));
     if (layout === "split" && !this.pairs) this.pairs = G.splitRows(this.rows);
     const rows = layout === "split" ? this.pairs : this.rows;
-    const heights = rows.map((r) => (r.kind === "f" ? HEAD : ROW));
+    const heights = this.heightsFor(rows, layout);
     const list = v_virtual_list(`${this.listId}-${layout}`, rows.length, heights, (i) => String(i),
-      (range) => rows.slice(range.start, range.end).map((row) => (layout === "split" ? this.splitRow(row, t) : this.unifiedRow(row, t)))).size_full();
-    const body = div().flex_1().min_h(0).relative().font_family(mono()).text_size(12)
+      (range) => rows.slice(range.start, range.end).map((row) => this.rowView(row, t, layout))).size_full();
+    const body = div().id(`${this.listId}-body`).flex_1().min_h(0).relative().font_family(mono()).text_size(12)
+      .on_size_change((size, cx) => this.measured(size, cx))
       .when(layout === "unified", (e) => e.child(div().id(`${this.listId}-x`).size_full().overflow_x_scrollbar()
         .child(div().w_full().min_w(this.width + 110).h_full().child(list))))
       // Split: one list for both columns keeps them level; sideways scrolling moves both texts.

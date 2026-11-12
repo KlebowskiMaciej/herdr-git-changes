@@ -37,10 +37,22 @@ picks its own Changes panel, so you point your layouts at this one
     staged, pop the latest stash, discard tracked changes, trash untracked
     files.
   - Stage All / Unstage All.
-- **On a file:** click it to show its diff in the main area. Hover to get
-  *Discard*. Right-click to stage, show the diff, copy its path, or discard it.
-- **On a stash:** click to see its diff, new files included. Hover to Apply,
-  Pop or Drop it.
+- **On a file:** click it to show its diff in the main area. The button at the
+  end of the row discards it (it turns red on hover and asks once more).
+  Right-click to stage, show the diff, **open its folder**, copy its path, or
+  discard it.
+- **On a folder (Tree):** click to fold it. Right-click to stage or unstage
+  everything in it, **open the folder**, or copy its path.
+- **Open folder** shows the folder in your file manager (`xdg-open` on Linux,
+  `open` on macOS, `explorer` on Windows). **Open in terminal** starts a
+  terminal tab in it. The path is inside the focused terminal's repository, and
+  a file in the repository's root opens the root. For a space on another
+  machine, only the terminal tab is offered.
+- **On a stash:** click to see its diff, new files included. The buttons at the
+  end of the row Apply, Pop or Drop it.
+- **Big lists stay quick.** Only the rows on screen are drawn, so a worktree
+  with hundreds of changed files scrolls and hovers as smoothly as one with
+  three. A refresh that finds nothing new redraws nothing.
 
 ### The diff, in the main area
 
@@ -59,6 +71,13 @@ the next click.
   sides move together.
 - The switch is in the tab's header and in the panel's toolbar; both change
   every diff tab.
+- **Images** (PNG, JPEG, GIF, WebP, SVG and BMP) show as pictures, with their
+  size and file size. A changed image shows *Before* and *After*: stacked in
+  one column, side by side in two columns, so the same switch compares them.
+  An added or untracked image shows the new picture, a deleted one the old
+  picture. A commit, a stash or View Diff that touches images shows them inline,
+  next to the text of the other files. An SVG also shows its text diff. Pictures
+  are scaled down to fit, never up.
 - The tab follows the files: saving a shown file refreshes it.
 - The row the tab shows is highlighted in the panel.
 
@@ -119,8 +138,17 @@ untracked file. Every git call is an argument list, never a shell line. Reads
 use `--no-optional-locks` and leave the index alone, so the panel's own refreshes
 don't wake its file watcher.
 
-It reaches the network only through git, when you Fetch, Pull or Push. It reads
-and writes nothing outside the repository and Herdr's own state.
+It reaches the network only through git, when you Fetch, Pull or Push. Outside
+the repository it does three things:
+
+- To show an image, it copies the image's bytes (a git object, or the file on
+  disk) into `~/.config/herdr-app/data/git-changes/preview/`, named by content,
+  because Herdr loads pictures only from its own folder. It runs a fixed
+  `sh -c` script for the copy (`git cat-file` or `cp`, then `mv`) with the paths
+  as separate arguments, and `wc` to check the size. The folder is emptied when
+  it holds more than 300 files. It works on this computer only.
+- *Open folder* starts `xdg-open`, `open` or `explorer` on the folder.
+- *Open in terminal* runs Herdr's `tab.new` for the folder.
 
 ## Install
 
@@ -200,11 +228,20 @@ herdr-app do tab.new '{"name":"History","mod":"git-changes","props":{"folder":"/
 
 ## Limits
 
-- Tested on macOS with Herdr 0.1.11. Linux and Windows aren't tested.
+- Tested on macOS with Herdr 0.1.11. The virtual list, the image previews and
+  Open folder were added on Linux (Hyprland) with a newer Herdr: the node tests
+  cover them and `herdr-app check` loads them, but the pictures and the exact
+  click positions have not been confirmed in a running window yet. Windows
+  isn't tested.
 - Whole files only: no staging of single hunks or lines yet.
 - Renames show as a delete and an add (status runs with `--no-renames`).
 - At most 1,000 changed files are listed. A diff shows up to 5,000 lines; an
   untracked file shows its first 3,000 lines.
+- Image previews need `sh` and `git` (not Windows without them), skip images over
+  10 MB, show the first 20 images of a diff, and don't work for another machine.
+  An image Herdr can't decode shows as an empty box.
+- Hover highlights a row, but the buttons at its end are always there: Herdr has
+  no way yet to show a row's children only while the pointer is on the row.
 - Two columns pair lines by position, not by similarity: a block of 3 removed
   and 1 added lines puts the added one next to the first removed one. There's
   no word-level highlighting.
@@ -213,13 +250,14 @@ herdr-app do tab.new '{"name":"History","mod":"git-changes","props":{"folder":"/
 - No branch creation, merge, rebase, cherry-pick or tags from the panel; use
   [herdr-git-graph](https://github.com/rabeeh-ta/herdr-git-graph) for those.
 - `herdr-app check` renders the panel once, before any git output arrives, so
-  it can't catch errors in the rows. `tests/ui.test.mjs` covers that; test in
-  the app too.
+  it can't catch errors in the rows, and it doesn't load pictures.
+  `tests/ui.test.mjs` covers that; test in the app too.
 
 ## Development
 
 ```sh
 node tests/git.test.mjs   # git logic against real repositories
+node tests/rows.test.mjs  # the list's rows, where a click lands, image sizes
 node tests/ui.test.mjs    # the panel and the diff tab, rendered
 ```
 
@@ -228,16 +266,24 @@ every command a button or menu item runs against real git, then checks the
 parsing, the commit modes, the remote button's choice, stashes, uncommit, force
 push, checkout and the history graph (lanes, labels, the remote toggle).
 
+`rows.test.mjs` checks the list's rows (tree, flat, folded, staged state), where
+a click lands in each kind of row, and reading an image's size from its bytes.
+
 `ui.test.mjs` loads `panel.js` and `diff.js` under node with a small stand-in
 for Herdr and GPUI, on a real repository. It draws every row, which
-`herdr-app check` doesn't, and clicks through:
+`herdr-app check` doesn't, and refuses a handler inside a virtual list's row as
+Herdr does. It clicks through:
 - the tree, folding and flat;
-- a folder's checkbox;
+- a folder's checkbox, a file's checkbox and its discard button;
+- that nothing listens for hover, and that a render's cost doesn't grow with
+  the number of files;
 - opening the diff tab and reusing it;
 - one and two columns;
-- History.
+- History;
+- Open folder and Open in terminal;
+- image diffs: modified, added, deleted, in a commit and in a stash.
 
-Neither needs Herdr. CI runs both on every push.
+None needs Herdr. CI runs all three on every push.
 
 While editing, copy the folder over the installed one and check it:
 
@@ -251,12 +297,15 @@ Files in `mods/git-changes/`:
 | File | What's in it |
 |---|---|
 | `main.js` | Picks a role from `props.role`: the panel, a menu, or the diff tab (`"diff"`). |
-| `panel.js` | The panel: reading the repository, every action, the Changes tab with its tree and flat lists, and the commit area. |
+| `panel.js` | The panel: reading the repository, every action, the Changes tab's virtual list, its menus, and the commit area. |
+| `rows.js` | The Changes list as flat rows, and where a click lands in a row. No Herdr imports. |
+| `images.js` | Copies an image's bytes into Herdr's folder so it can be shown. |
+| `imageinfo.js` | An image's size from its bytes, scaling it to fit, file sizes. No Herdr imports. |
 | `history.js` | The History tab's graph. |
 | `lanes.js` | Lays commits out on lanes (from herdr-git-graph, unchanged). |
-| `diff.js` | Loading diffs, the one diff tab per space and its one- and two-column views. |
+| `diff.js` | Loading diffs, the one diff tab per space, its one- and two-column views and its image rows. |
 | `menu.js` | The dropdown and right-click menus, shown as popups. |
-| `git.js` | Parsing git's output, the folder tree, pairing lines for two columns, and the argv behind every action. No Herdr imports, so node can test it. |
+| `git.js` | Parsing git's output, the folder tree, pairing lines for two columns, finding the images in a diff, and the argv behind every action. No Herdr imports, so node can test it. |
 
 The panel and the diff tab are separate copies of the mod. They talk through
 shared state:
