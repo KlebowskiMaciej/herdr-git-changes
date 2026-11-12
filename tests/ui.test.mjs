@@ -82,6 +82,7 @@ export const openOverlay = (spec) => { H.overlays.push(spec); return "o1"; };
 export const closeOverlay = () => null;
 export const exec = (cmd, args, opts) => H.exec(cmd, args, opts);
 export const hc = (args) => H.hc(args);
+export const terminals = () => H.terminals;
 export const readTextFile = (p) => H.read(p);
 export const writeTextFile = (p, text, expected) => H.write(p, text, expected);
 export const watchFolder = () => new Promise(() => {});
@@ -100,16 +101,11 @@ const H = globalThis.__herdr = {
   exec: async (cmd, args, { cwd } = {}) => {
     H.execs.push([cmd, args]);
     if (OPENERS.includes(cmd)) return { code: 0, stdout: "", stderr: "" };
-    if (cmd === "sh" && args[1].startsWith("exec claude")) {
-      assert.match(args[1], /< \/dev\/null$/, "claude -p runs with its input closed");
-      return H.claude(args.slice(3), cwd);
-    }
     const r = spawnSync(cmd, args, { cwd, env, encoding: "utf8" });
     return { code: r.status, stdout: r.stdout, stderr: r.stderr };
   },
-  claude: () => ({ code: 1, stdout: "", stderr: "no claude here" }),
-  sent: [],
-  hc: async (args) => { H.sent.push(args); return { code: 0, stdout: "", stderr: "" }; },
+  terminals: [],
+  hc: async () => ({ code: 0, stdout: "{}", stderr: "" }),
   read: async (p) => { try { return readFileSync(p, "utf8"); } catch { return null; } },
   write: async (p, text, expected) => {
     const now = await H.read(p);
@@ -672,20 +668,34 @@ writeFileSync(join(talkRepo, "notes.ts"), "one\ntwo\nthree\n");
 talkGit("add", "."); talkGit("commit", "-qm", "notes");
 writeFileSync(join(talkRepo, "notes.ts"), "one\nTWO\nthree\n");
 
-const MAIN_SESSION = "11111111-1111-4111-8111-111111111111", FIRST_COPY = "22222222-2222-4222-8222-222222222222", SECOND_COPY = "33333333-3333-4333-8333-333333333333";
-const sessions = join(claudeHome, "projects", talkRepo.replace(/[^A-Za-z0-9]/g, "-"));
-const addSession = (id, age) => {
-  mkdirSync(sessions, { recursive: true });
-  writeFileSync(join(sessions, `${id}.jsonl`), "{}\n");
+const MAIN_SESSION = "11111111-1111-4111-8111-111111111111";
+const projectOf = (cwd) => join(claudeHome, "projects", cwd.replace(/[^A-Za-z0-9]/g, "-"));
+const sessions = projectOf(talkRepo);
+const addSession = (dir, id, age) => {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${id}.jsonl`), "{}\n");
   const at = new Date(Date.now() - age * 1000);
-  utimesSync(join(sessions, `${id}.jsonl`), at, at);
+  utimesSync(join(dir, `${id}.jsonl`), at, at);
 };
-addSession(MAIN_SESSION, 60);
+addSession(sessions, MAIN_SESSION, 60);
 
-const answers = [];
-const answer = (session, result) => answers.push({ code: 0, stdout: JSON.stringify({ type: "result", is_error: false, result, session_id: session }), stderr: "" });
-const asked = [];
-H.claude = (args, cwd) => { asked.push({ args, cwd }); return answers.shift() ?? { code: 1, stdout: "", stderr: "Claude Code is not signed in" }; };
+// Stand-in for hc: `run` starts a live terminal that Herdr lists, `send` and `peek` are recorded, `kill` ends it.
+const hcCalls = [];
+let terminalCount = 0;
+H.hc = async (args) => {
+  hcCalls.push(args);
+  if (args[0] === "run") {
+    if (H.hcFails) return { code: 1, stdout: "", stderr: H.hcFails };
+    const opt = (name) => args[args.indexOf(name) + 1], [labelKey, labelValue] = opt("--label").split("=");
+    const address = `t${100 + ++terminalCount}`;
+    H.terminals.push({ address, name: opt("--name"), labels: { [labelKey]: labelValue }, state: "live", status: "working", cwd: opt("--cwd") });
+    return { code: 0, stdout: JSON.stringify({ address, state: "live" }), stderr: "" };
+  }
+  if (args[0] === "kill") { const t = H.terminals.find((x) => x.address === args[1]); if (t) t.state = "finished"; }
+  return { code: 0, stdout: "{}", stderr: "" };
+};
+const runs = () => hcCalls.filter((a) => a[0] === "run");
+const claudeOf = (call) => call.slice(call.indexOf("--") + 1);
 
 const openTalk = async (root = talkRepo) => {
   const saved = H.currentProps;
@@ -699,6 +709,8 @@ const openTalk = async (root = talkRepo) => {
 const diffList = (tree) => walk(tree).find((n) => n.kind === "list");
 const lineKey = (view, text) => `r${view.rows.findIndex((r) => r.text === text)}`;
 const threadKeys = (view) => diffList(view.render(cx)).keys.filter((k) => k.startsWith("t"));
+const threadOf = (view, text) => view.comments.find((c) => c.text === text);
+const terminalOf = (c) => H.terminals.find((t) => t.address === c.terminal);
 const comment = async (view, key, text) => {
   diffList(view.render(cx)).handlers.item_click(key, cx);
   assert.ok(diffList(view.render(cx)).keys.includes("compose"), "the comment box opened under the line");
@@ -706,46 +718,83 @@ const comment = async (view, key, text) => {
   view.composer.handlers.submit({ secondary: true }, cx);
   await settle();
 };
+// The session answers: its file gets the prompt and the answer, its terminal goes idle, and the tab looks.
+const answerIn = async (view, lineText, text) => {
+  const c = threadOf(view, lineText), file = join(projectOf(c.cwd), `${c.session}.jsonl`);
+  mkdirSync(projectOf(c.cwd), { recursive: true });
+  const records = [
+    { type: "user", timestamp: new Date().toISOString(), message: { role: "user", content: "the question" } },
+    { type: "assistant", timestamp: new Date().toISOString(), message: { role: "assistant", content: [{ type: "tool_use", name: "Read" }] } },
+    { type: "user", timestamp: new Date().toISOString(), message: { role: "user", content: [{ type: "tool_result", content: "..." }] } },
+    { type: "assistant", timestamp: new Date().toISOString(), message: { role: "assistant", content: [{ type: "text", text }] } },
+  ];
+  writeFileSync(file, (readdirSync(projectOf(c.cwd)).includes(`${c.session}.jsonl`) ? readFileSync(file, "utf8") : "") + records.map((r) => JSON.stringify(r)).join("\n") + "\n");
+  const t = terminalOf(c); if (t) t.status = "idle";
+  view.pollAnswers(cx); await settle();
+};
 const savedComments = () => JSON.parse(readFileSync(join(talkRepo, ".git/git-changes-comments.json"), "utf8")).comments;
 
 let talk;
-await test("a comment on a line asks a copy of the newest Claude Code session and shows the answer under the line", async () => {
+await test("a comment on a line starts an interactive copy of the session as a sub-agent, and its answer shows under the line", async () => {
   talk = await openTalk();
-  answer(FIRST_COPY, "Because TWO reads as a constant.");
   await comment(talk, lineKey(talk, "TWO"), "Why uppercase?");
-  const [{ args, cwd }] = asked;
-  assert.equal(cwd, talkRepo);
-  assert.deepEqual(args.slice(0, 4), ["-p", "--resume", MAIN_SESSION, "--fork-session"]);
-  assert.ok(args.includes("--append-system-prompt") && args.includes("Read,Grep,Glob"), "short answers, read-only tools");
-  const prompt = args.at(-1);
-  assert.equal(args.at(-2), "--");
+  const [call] = runs(), c = threadOf(talk, "TWO");
+  const opt = (name) => call[call.indexOf(name) + 1];
+  assert.equal(opt("--cwd"), talkRepo, "in the session's own folder, so its .claude settings load");
+  assert.ok(call.includes("--no-parent") && call.includes("--no-notify") && call.includes("--outlive-parent"));
+  assert.equal(opt("--label"), `git-changes=${c.id}`);
+  const claude = claudeOf(call), flag = (name) => claude[claude.indexOf(name) + 1];
+  assert.deepEqual(claude.slice(0, 4), ["claude", "--resume", MAIN_SESSION, "--fork-session"]);
+  assert.match(flag("--session-id"), /^c0ffee00-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.equal(flag("--name"), "Review: notes.ts:2");
+  assert.ok(!claude.includes("-p") && !claude.includes("--tools"), "interactive, with the project's own tools and permissions");
+  const prompt = claude.at(-1);
+  assert.equal(claude.at(-2), "--");
   assert.ok(prompt.includes("notes.ts, line 2 (added): TWO") && prompt.includes("+TWO") && prompt.includes("My comment: Why uppercase?"), prompt);
+  const waiting = talk.render(cx);
+  assert.ok(texts(waiting).includes("Thinking…") && walk(waiting).some((n) => n.props.frames), "a spinner while it works");
+  assert.ok(texts(waiting).includes(`Session review-${c.id} is open · right-click → Open session`));
+  await answerIn(talk, "TWO", "Because TWO reads as a constant.");
   const tree = talk.render(cx), list = diffList(tree), all = texts(tree);
-  assert.ok(all.includes("Why uppercase?") && all.includes("Because TWO reads as a constant."), "question and answer shown");
+  assert.ok(all.includes("Why uppercase?") && all.includes("Because TWO reads as a constant."), "question and the last answer of the turn");
   assert.equal(list.keys[list.keys.indexOf(lineKey(talk, "TWO")) + 1], threadKeys(talk)[0], "the thread sits right under its line");
   assert.ok(!list.keys.includes("compose"), "the box closed after sending");
   const lineHeights = walk(tree).flatMap((n) => n.props.line_height ?? []);
   assert.ok(lineHeights.length && lineHeights.every((h) => typeof h === "string" && h.endsWith("px")), "a bare number is a multiplier in Herdr: line heights are pixels");
   const [saved] = savedComments();
-  assert.equal(saved.session, FIRST_COPY);
+  assert.equal(saved.session, flag("--session-id"));
+  assert.equal(saved.terminal, "t101");
   assert.deepEqual(saved.thread.map((m) => m.from), ["you", "claude"]);
 });
 
-await test("a reply in a thread resumes its copy without forking again", async () => {
-  answer(FIRST_COPY, "Yes, rename it.");
+await test("a reply is typed into the open session; once that session is closed, a reply opens it again", async () => {
   await comment(talk, threadKeys(talk)[0], "Should I rename it?");
-  const { args } = asked.at(-1);
-  assert.deepEqual(args.slice(0, 3), ["-p", "--resume", FIRST_COPY]);
-  assert.ok(!args.includes("--fork-session"));
-  assert.equal(args.at(-1), "Should I rename it?");
+  assert.deepEqual(hcCalls.at(-1), ["send", "t101", "Should I rename it?"]);
+  await answerIn(talk, "TWO", "Yes, rename it.");
   assert.ok(texts(talk.render(cx)).includes("Yes, rename it."));
+  terminalOf(threadOf(talk, "TWO")).state = "finished";
+  await comment(talk, threadKeys(talk)[0], "Then do it.");
+  const claude = claudeOf(runs().at(-1)), c = threadOf(talk, "TWO");
+  assert.deepEqual([...claude.slice(0, 3), claude.at(-1)], ["claude", "--resume", c.session, "Then do it."]);
+  assert.ok(!claude.includes("--fork-session"), "the thread's own copy, not a new fork");
+  assert.equal(c.terminal, "t102");
+  await answerIn(talk, "TWO", "Renamed it to two.");
+  assert.ok(texts(talk.render(cx)).includes("Renamed it to two."));
 });
 
-await test("a new thread forks the person's session, not a copy an earlier thread made", async () => {
-  addSession(FIRST_COPY, 1);
-  answer(SECOND_COPY, "It closes the list.");
+await test("a new thread forks the person's session, never a copy; while its session waits for permission the thread says so, and Open session peeks at it", async () => {
   await comment(talk, lineKey(talk, "three"), "What is this for?");
-  assert.equal(asked.at(-1).args[2], MAIN_SESSION);
+  assert.equal(claudeOf(runs().at(-1))[2], MAIN_SESSION, "copies (c0ffee00-…) are newer but skipped");
+  const c = threadOf(talk, "three");
+  terminalOf(c).status = "blocked";
+  talk.pollAnswers(cx); await settle();
+  assert.ok(texts(talk.render(cx)).includes("Waiting for you in its session · right-click → Open session"));
+  diffList(talk.render(cx)).handlers.item_secondary_click(`t${c.id}`, {}, cx);
+  H.runs = [];
+  chooseMenu(H.overlays.at(-1), "Open session");
+  talk.render(cx); await settle();
+  assert.deepEqual(H.runs.at(-1), ["terminal.peek", { terminal: c.terminal }]);
+  await answerIn(talk, "three", "It closes the list.");
   assert.equal(threadKeys(talk).length, 2);
 });
 
@@ -754,30 +803,38 @@ await test("threads are kept in the git folder and follow their line when lines 
   const view = await openTalk(), list = diffList(view.render(cx));
   const under = (text) => list.keys[list.keys.indexOf(lineKey(view, text)) + 1];
   assert.ok(under("TWO").startsWith("t") && under("three").startsWith("t"), list.keys.join(" "));
-  assert.ok(texts(view.render(cx)).includes("Yes, rename it."));
+  assert.ok(texts(view.render(cx)).includes("Renamed it to two."));
   talk = view;
 });
 
-await test("a failed answer says why, and Ask again in the thread's menu asks once more", async () => {
+await test("a session that can't start says why, and Ask again in the thread's menu tries once more", async () => {
+  H.hcFails = "no claude here";
   await comment(talk, lineKey(talk, "zero"), "Is this needed?");
-  assert.ok(texts(talk.render(cx)).includes("Claude Code is not signed in"));
-  const key = diffList(talk.render(cx)).keys.find((k, i, keys) => keys[i - 1] === lineKey(talk, "zero"));
-  diffList(talk.render(cx)).handlers.item_secondary_click(key, {}, cx);
-  answer(SECOND_COPY, "No, drop it.");
+  assert.ok(texts(talk.render(cx)).includes("no claude here"));
+  H.hcFails = null;
+  diffList(talk.render(cx)).handlers.item_secondary_click(`t${threadOf(talk, "zero").id}`, {}, cx);
   chooseMenu(H.overlays.at(-1), "Ask again");
   talk.render(cx); await settle();
+  await answerIn(talk, "zero", "No, drop it.");
   assert.ok(texts(talk.render(cx)).includes("No, drop it."));
 });
 
-await test("Delete thread removes the thread and the session copy it made", async () => {
-  addSession(SECOND_COPY, 0);
-  const key = diffList(talk.render(cx)).keys.find((k, i, keys) => keys[i - 1] === lineKey(talk, "three"));
-  diffList(talk.render(cx)).handlers.item_secondary_click(key, {}, cx);
+await test("a session closed before it answered says so", async () => {
+  await comment(talk, threadKeys(talk).find((k) => k === `t${threadOf(talk, "zero").id}`), "Sure?");
+  terminalOf(threadOf(talk, "zero")).state = "finished";
+  talk.pollAnswers(cx); await settle();
+  assert.ok(texts(talk.render(cx)).includes("Its session ended without an answer · right-click → Ask again"));
+});
+
+await test("Delete thread ends its session and deletes the copy's files, not the person's session", async () => {
+  const c = threadOf(talk, "three");
+  diffList(talk.render(cx)).handlers.item_secondary_click(`t${c.id}`, {}, cx);
   chooseMenu(H.overlays.at(-1), "Delete thread");
   talk.render(cx); await settle();
   assert.ok(!texts(talk.render(cx)).includes("It closes the list."));
-  assert.ok(!savedComments().some((c) => c.text === "three"), "gone from the file");
-  assert.ok(!readdirSync(sessions).includes(`${SECOND_COPY}.jsonl`), "its copy is deleted");
+  assert.ok(!savedComments().some((x) => x.text === "three"), "gone from the file");
+  assert.ok(hcCalls.some((a) => a[0] === "kill" && a[1] === c.terminal), "its terminal is ended");
+  assert.ok(!readdirSync(sessions).includes(`${c.session}.jsonl`), "its copy is deleted");
   assert.ok(readdirSync(sessions).includes(`${MAIN_SESSION}.jsonl`), "the person's own session is kept");
 });
 
@@ -793,20 +850,27 @@ await test("Escape closes the comment box; in two columns the pressed side picks
   H.shared["git-changes.layout"] = "unified";
 });
 
-await test("Enter sends and Shift+Enter doesn't; while Claude answers, a spinner shows under the question", async () => {
-  let release;
-  answers.push(new Promise((resolve) => { release = () => resolve({ code: 0, stdout: JSON.stringify({ result: "Run them first.", session_id: FIRST_COPY }), stderr: "" }); }));
-  const keys = diffList(talk.render(cx)).keys;
-  diffList(talk.render(cx)).handlers.item_click(keys[keys.indexOf(lineKey(talk, "TWO")) + 1], cx);
+await test("Enter sends and Shift+Enter doesn't", async () => {
+  const key = `t${threadOf(talk, "TWO").id}`;
+  diffList(talk.render(cx)).handlers.item_click(key, cx);
   talk.composer.set_value("And the tests?");
   talk.composer.handlers.submit({ shift: true }, cx);
   assert.ok(talk.target, "Shift+Enter keeps the box open");
   talk.composer.handlers.submit({}, cx);
-  const waiting = talk.render(cx);
-  assert.ok(texts(waiting).includes("Thinking…"));
-  assert.ok(walk(waiting).some((n) => n.props.frames), "a spinner");
-  release(); await settle();
+  await settle();
+  assert.equal(talk.target, null);
+  await answerIn(talk, "TWO", "Run them first.");
   assert.ok(texts(talk.render(cx)).includes("Run them first."));
+});
+
+await test("an answered thread ends with a Reply box that opens the reply under it", async () => {
+  const key = `t${threadOf(talk, "TWO").id}`;
+  assert.ok(texts(talk.render(cx)).includes("Reply…"));
+  diffList(talk.render(cx)).handlers.item_click(key, cx);
+  const list = diffList(talk.render(cx));
+  assert.equal(list.keys[list.keys.indexOf(key) + 1], "compose", "the reply box opens right under the thread");
+  assert.ok(!texts(talk.render(cx)).includes("Reply…"), "the thread being answered hides its Reply box");
+  talk.closeComposer();
 });
 
 await test("every line has a comment icon, in the accent colour on a line with a thread", async () => {
@@ -831,59 +895,25 @@ await test("in a linked worktree, the session comes from the main checkout, wher
   talkGit("worktree", "add", "-q", worktree, "-b", "review");
   writeFileSync(join(worktree, "notes.ts"), "one\nTwo\nthree\n");
   const view = await openTalk(worktree);
-  answer(SECOND_COPY, "Fine.");
   await comment(view, lineKey(view, "Two"), "Title case?");
-  const { args, cwd } = asked.at(-1);
-  assert.equal(cwd, talkRepo);
-  assert.ok([MAIN_SESSION, FIRST_COPY].includes(args[2]) && args.includes("--fork-session"), args.join(" "));
-  assert.ok(texts(view.render(cx)).includes("Fine."));
+  const call = runs().at(-1);
+  assert.equal(call[call.indexOf("--cwd") + 1], talkRepo);
+  assert.equal(claudeOf(call)[2], MAIN_SESSION);
 });
 
-await test("a Claude Code terminal in the diff's space is the session forked, wherever it runs", async () => {
+await test("a Claude Code terminal in the diff's space is the session forked, and the copy is its sub-agent", async () => {
   const elsewhere = join(base, "elsewhere"), own = "44444444-4444-4444-8444-444444444444";
   mkdirSync(elsewhere);
-  const dir = join(claudeHome, "projects", elsewhere.replace(/[^A-Za-z0-9]/g, "-"));
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, `${own}.jsonl`), "{}\n");
-  const at = new Date(Date.now() - 3600 * 1000); utimesSync(join(dir, `${own}.jsonl`), at, at);
+  addSession(projectOf(elsewhere), own, 3600);
   const saved = H.panes;
   H.panes = [...saved, { pane: "p9", tab: "tb1", terminal: "t9", cwd: elsewhere, app: "claude-code", title: "✳ Review MR 2149", focused: false }];
   try {
     const view = await openTalk();
-    answer(SECOND_COPY, "Sure.");
     await comment(view, lineKey(view, "one"), "Keep this?");
-    assert.deepEqual([asked.at(-1).args[2], asked.at(-1).cwd], [own, elsewhere]);
-    talk = view;
+    const call = runs().at(-1), opt = (name) => call[call.indexOf(name) + 1];
+    assert.deepEqual([opt("--parent"), opt("--cwd"), claudeOf(call)[2]], ["t9", elsewhere, own]);
   } finally { H.panes = saved; }
 });
-
-await test("the copy knows the session it came from, and passes a request for work on to that session's terminal", async () => {
-  const key = threadKeys(talk).find((k) => talk.commentById(k.slice(1)).text === "one");
-  const style = (args) => args[args.indexOf("--append-system-prompt") + 1];
-  assert.match(style(asked.at(-1).args), /copy of the Claude Code session "Review MR 2149" \(44444444-[^)]+\), which still runs/);
-  answer(SECOND_COPY, "I passed it on to the session.\nHANDOFF: Delete the line `one` in notes.ts.");
-  H.sent = [];
-  await comment(talk, key, "Please remove it");
-  assert.match(style(asked.at(-1).args), /HANDOFF:/, "replies keep the hand-off instructions");
-  assert.equal(H.sent.length, 1);
-  assert.deepEqual(H.sent[0].slice(0, 2), ["send", "t9"]);
-  assert.match(H.sent[0][2], /notes\.ts line 2.*Delete the line `one` in notes\.ts\.$/);
-  const all = texts(talk.render(cx));
-  assert.ok(all.includes("I passed it on to the session."), "the answer, without its HANDOFF line");
-  assert.ok(all.includes("Passed to Review MR 2149: Delete the line `one` in notes.ts."));
-  assert.ok(!all.some((t) => t.startsWith("HANDOFF")));
-});
-
-await test("an answered thread ends with a Reply box that opens the reply under it", async () => {
-  const key = threadKeys(talk)[0];
-  assert.ok(texts(talk.render(cx)).includes("Reply…"));
-  diffList(talk.render(cx)).handlers.item_click(key, cx);
-  const list = diffList(talk.render(cx));
-  assert.equal(list.keys[list.keys.indexOf(key) + 1], "compose", "the reply box opens right under the thread");
-  assert.equal(texts(talk.render(cx)).filter((t) => t === "Reply…").length, threadKeys(talk).length - 1, "the thread being answered hides its Reply box");
-  talk.closeComposer();
-});
-
 rmSync(base, { recursive: true, force: true });
 console.log(`\n${passed} passed${process.exitCode ? ", some failed" : ""}`);
 clearInterval(keepAlive);

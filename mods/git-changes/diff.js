@@ -16,7 +16,7 @@
 // context line. That code isn't used here; git.js has its own splitRows().
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, v_virtual_list, TextareaState, Textarea } from "gpui-base";
-import { exec, readTextFile, watchFolder, theme, settings, props, shared, setShared, spaces, panes, run, notify, openOverlay } from "herdr";
+import { exec, readTextFile, watchFolder, theme, settings, props, shared, setShared, spaces, panes, run, notify, openOverlay, terminals } from "herdr";
 import * as G from "./git.js";
 import * as C from "./comments.js";
 import { icon, menuHeight } from "./menu.js";
@@ -31,7 +31,7 @@ const THREAD_INDENT = 54, THREAD_MARGIN = 16, MIN_CARD = 240, CHAR_WIDTH = 7.25,
 const CARD_PAD = 10, CARD_PAD_Y = 6, CARD_BORDER = 1, ROW_PAD_Y = 4, BLOCK_GAP = 4, COMPOSE_INPUT = 60;
 const CARD_FRAME = 2 * (ROW_PAD_Y + CARD_PAD_Y + CARD_BORDER);
 const COMPOSE_HEIGHT = CARD_FRAME + COMPOSE_INPUT + BLOCK_GAP + LINE;
-const MENU_WIDTH = 200, MARK = 16, SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], SPINNER_MS = 80;
+const MENU_WIDTH = 200, MARK = 16, ANSWER_POLL_MS = 1500, SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], SPINNER_MS = 80;
 const mono = () => settings().font_family ?? "JetBrains Mono";
 
 const diffHeader = (path) => `diff --git a/${path} b/${path}`;
@@ -105,7 +105,7 @@ export class DiffView {
     this.previews = new Map();
     this.uid = `gcd-${Math.random().toString(36).slice(2)}`;
     this.comments = []; this.commentsFile = null; this.saving = Promise.resolve(null);
-    this.asking = new Set(); this.failures = new Map(); this.target = null; this.threadVersion = 0; this.display = null;
+    this.asking = new Set(); this.reading = new Set(); this.failures = new Map(); this.target = null; this.threadVersion = 0; this.display = null;
     this.menuActions = {}; this.menuSerial = 0; this.pickSeen = shared("git-changes.pick")?.at; this.pressSide = "right";
     this.composer = TextareaState.new({ placeholder: "Comment on this line", rows: 3 });
     this.composer.on("submit", (e, cx) => { if (!e.shift) this.send(cx); });
@@ -114,6 +114,7 @@ export class DiffView {
     this.sync(cx);
     // Picks arrive through shared state, which re-renders this copy; files change under it.
     cx.timer.every(10000, (cx) => this.reload(cx));
+    cx.timer.every(ANSWER_POLL_MS, (cx) => this.pollAnswers(cx));
   }
 
   entry() { return (shared("git-changes.view") ?? {})[this.space]; }
@@ -215,15 +216,39 @@ export class DiffView {
   ask(id, cx) {
     const comment = this.commentById(id);
     if (!comment || this.asking.has(id)) return;
-    const source = { root: this.root, on: this.on, space: this.space, taken:new Set(this.comments.map((c) => c.session).filter(Boolean)) };
+    const source = { root: this.root, on: this.on, space: this.space, taken: new Set(this.comments.map((c) => c.session).filter(Boolean)) };
     const file = this.commentsFile;
     this.asking.add(id); this.failures.delete(id); this.changed();
     cx.spawn(async (cx) => {
-      try {
-        const { message, session, cwd, origin } = await C.askClaude(comment, source);
-        this.save(C.withMessage(id, message, { session, cwd, origin }), cx, file);
-      } catch (e) { this.failures.set(id, String(e?.message ?? e)); }
+      try { this.save(C.withFields(id, await C.deliver(comment, source)), cx, file); }
+      catch (e) { this.failures.set(id, String(e?.message ?? e)); }
       finally { this.asking.delete(id); this.changed(); cx.notify(); }
+    });
+  }
+
+  /** Looks for answers to the threads waiting on their sessions, once each session's turn is over. */
+  pollAnswers(cx) {
+    const list = terminals();
+    const statuses = this.comments.map((c) => `${c.id}:${C.sessionTerminal(c, list)?.status ?? "-"}`).join(" ");
+    if (statuses !== this.statuses) { this.statuses = statuses; this.changed(); cx.notify(); }
+    for (const comment of this.comments) {
+      const id = comment.id, session = C.sessionTerminal(comment, list);
+      if (!C.awaitsAnswer(comment) || !comment.session || this.asking.has(id) || this.reading.has(id) || this.failures.has(id)) continue;
+      if (session?.status === "working" || session?.status === "blocked") continue;
+      this.readAnswer(comment, Boolean(session), cx);
+    }
+  }
+
+  readAnswer(comment, running, cx) {
+    const id = comment.id, file = this.commentsFile, on = this.on;
+    this.reading.add(id);
+    cx.spawn(async (cx) => {
+      try {
+        const text = await C.readAnswer(comment, on);
+        if (text) this.save(C.withMessage(id, { from: "claude", text, at: Date.now() }), cx, file);
+        else if (!running) this.failures.set(id, "Its session ended without an answer · right-click → Ask again");
+      } catch (e) { this.failures.set(id, String(e?.message ?? e)); }
+      finally { this.reading.delete(id); this.changed(); cx.notify(); }
     });
   }
 
@@ -257,7 +282,9 @@ export class DiffView {
     const comment = key.startsWith("t") ? this.commentById(key.slice(1)) : null;
     if (!comment) return;
     const answer = C.lastAnswer(comment), canAsk = C.awaitsAnswer(comment) && !this.asking.has(comment.id);
+    const session = C.sessionTerminal(comment);
     this.menu([
+      session ? { label: "Open session", icon: "diff", run: () => run("terminal.peek", { terminal: session.address }) } : null,
       { label: "Reply", icon: "plus", run: () => this.openComposer({ id: comment.id }) },
       canAsk ? { label: "Ask again", icon: "refresh", run: (cx) => this.ask(comment.id, cx) } : null,
       answer ? { label: "Copy answer", icon: "copy", copy: answer } : null,
@@ -493,7 +520,10 @@ export class DiffView {
   cardColumns() { return Math.floor((this.cardWidth() - 2 * (CARD_PAD + CARD_BORDER)) / CHAR_WIDTH); }
 
   blocksOf({ comment, orphan }) {
-    return C.threadBlocks(comment, { asking: this.asking.has(comment.id), failure: this.failures.get(comment.id), orphan, replying: this.target?.id === comment.id });
+    return C.threadBlocks(comment, {
+      asking: this.asking.has(comment.id), failure: this.failures.get(comment.id), orphan,
+      replying: this.target?.id === comment.id, session: C.sessionTerminal(comment),
+    });
   }
 
   threadHeight(entry) {
@@ -508,7 +538,7 @@ export class DiffView {
 
   threadRow(entry, t) {
     const columns = this.cardColumns();
-    const tones = { you: t.foreground, claude: t.foreground, dim: t.dim, error: t.ansi1, handoff: t.accent };
+    const tones = { you: t.foreground, claude: t.foreground, dim: t.dim, error: t.ansi1 };
     const text = (b) => (b.spinner
       ? h_flex().h(LINE).gap(6).items_center().text_color(tones[b.tone])
         .child(div().w(12).flex_none().text_color(t.accent).frames(SPINNER, SPINNER_MS)).child(b.text)

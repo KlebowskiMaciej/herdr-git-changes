@@ -277,18 +277,22 @@ hint in 11px `dim`. Danger items are `ansi1`.
   - `comments.js`: comment threads. Pins a comment to a line by path, text and
     nearest number (`placeComments()`), estimates a thread's wrapped height,
     saves `<git dir>/git-changes-comments.json` with `writeTextFile` and its
-    stale-snapshot retry, and asks Claude Code. The first question finds the
-    newest `*.jsonl` session in `${CLAUDE_CONFIG_DIR:-~/.claude}/projects/<cwd
-    with every non-alphanumeric as ->`, skipping the copies threads already
-    made, in the first group that has one: the Claude Code panes of the diff's
-    space, the Claude Code panes inside the repository, then the repository and
-    its main checkout (`rev-parse --git-common-dir`). Then it runs
-    `claude -p --resume <id> --fork-session --output-format json --tools
-    Read,Grep,Glob --append-system-prompt <short> -- <prompt>`. Replies run the
-    same without `--fork-session`, on the thread's own copy. The comment keeps
-    `origin` (the forked session, its terminal and its title). When an answer
-    ends with `HANDOFF: <request>`, that line is cut off and the request goes to
-    `hc send <origin terminal> <text>`.
+    stale-snapshot retry, and talks to Claude Code. The first question finds
+    the newest `*.jsonl` session in `${CLAUDE_CONFIG_DIR:-~/.claude}/projects/<cwd
+    with every non-alphanumeric as ->`, in the first group that has one: the
+    Claude Code panes of the diff's space, the Claude Code panes inside the
+    repository, then the repository and its main checkout
+    (`rev-parse --git-common-dir`). Copies (`c0ffee00-…` ids, and the thread
+    terminals named `review-…`) are skipped. Then it runs `hc run --bg --json
+    --cwd <session folder> --name review-<comment id> --label
+    git-changes=<comment id> --no-notify --outlive-parent --parent <terminal> --
+    claude --resume <id> --fork-session --session-id c0ffee00-… --name
+    "Review: <file>:<line>" --append-system-prompt <short> -- <prompt>`. A reply
+    is `hc send <terminal> <text>`, or, when that terminal is gone, the same
+    `hc run` with `claude --resume <copy>`. Every 1.5 s the tab checks the
+    terminals (`terminals()`); when a waiting thread's terminal isn't
+    `working` or `blocked`, it reads the end of the copy's file and takes the
+    last assistant text after the first prompt sent since the question.
   - `menu.js`: menus.
   - `git.js`: parsing, `fileTree()` (folders first, single-folder chains
     merged, folded paths skipped, each folder's staged state), `splitRows()`
@@ -358,19 +362,21 @@ hint in 11px `dim`. Danger items are `ansi1`.
   before it draws, and Herdr can't measure wrapped text. The thread card uses
   the mono font, so `wrappedLines()` counts word-wrapped lines from the card's
   width at 7.25px a character.
-- **`claude -p --continue` is the wrong fork.** The copy a thread makes is the
-  newest session in the folder, so the next `--continue` would fork the copy.
-  Resume by id and skip the sessions threads made; delete a thread's session
-  with the thread.
+- **`--continue` is the wrong fork.** The copy a thread makes is the newest
+  session in the folder, so the next `--continue` would fork the copy. Resume
+  by id, give copies a recognisable `--session-id` (`c0ffee00-…`), and skip
+  them.
 - **`claude -p` waits for its input to end.** Given an open input pipe, it
   answers only when the pipe closes, so through `exec` it hung until the
-  timeout. Run it as `sh -c 'exec claude "$@" < /dev/null'`.
+  timeout. The copies now run interactively in a terminal instead.
+- **`hc ls` has no labels.** Recognise a thread's terminal by its address and
+  its name (`review-<comment id>`) as well as its label.
+- **A new folder asks for trust first.** Claude Code's "do you trust this
+  folder" dialog makes the copy's terminal `blocked`; the thread says it waits
+  for you. Folders where you already ran Claude Code don't ask.
 - **The comment icon shows on hover without a group-hover.** A line row's
   text colour is transparent and its hover style sets the accent; the icon has
   no colour of its own, so it inherits it. Every other cell sets its own colour.
-- **The copy ignores the hand-off rule in its instructions alone.** With only
-  `--append-system-prompt`, it offered to edit the file itself. The rule is
-  repeated at the end of every message it gets, and then it hands off.
 - **`line_height(18)` is 18 lines, not 18px.** A bare number is a multiplier.
   The thread text was pushed out of its card and only the labels showed. Pass
   `"18px"`.
@@ -439,6 +445,8 @@ hint in 11px `dim`. Danger items are `ansi1`.
   clipboard.
 - With Claude Code open in the repository: hover a line in the diff tab (it
   lights up with a comment icon), click it, type a question, press Enter. A
-  spinner shows under it, then a one- or two-sentence answer. `claude --resume` in that folder lists the original
-  session unchanged and one new copy. A reply in the thread adds no new copy.
-  Delete thread removes the copy from `claude --resume`.
+  `review-…` sub-agent appears under that Claude Code terminal, a spinner
+  shows under the comment, then a short answer. Right-click → Open session
+  shows the copy's terminal. A reply in the thread is typed there and adds no
+  new copy. Ask it for a change: the copy makes it. Delete thread ends the
+  sub-agent and removes the copy from `claude --resume`.

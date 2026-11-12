@@ -87,27 +87,28 @@ the next click.
   under the pointer, with a comment icon at its start; a line with a thread
   keeps its icon in the accent colour. Enter sends, Shift+Enter starts a new
   line, Esc closes the box. In two columns, click the side you mean.
-- **A copy of your Claude Code session answers** in one or two sentences, right
-  under your comment. A spinner shows there until the answer comes. The copy
-  is a fork of the newest Claude Code session of the first of these that has
-  one: the Claude Code terminals in the diff's
-  space, the Claude Code terminals inside the repository, then the repository
-  and its main checkout (a session that made a worktree keeps its sessions
-  where it started). It knows what that session knows, and the session itself does not
-  change. The copy can only read files (`Read`, `Grep`, `Glob`).
+- **A copy of your Claude Code session answers**, right under your comment.
+  The comment starts an interactive fork of the session as its **sub-agent**
+  in Herdr (named `review-…`, titled *Review: <file>:<line>*), in the session's
+  own folder. So it loads the project's `.claude` settings, has the same
+  permissions, and can do the work you ask for. It knows what the session
+  knows; the session itself does not change. A spinner shows while it works,
+  then its answer (the last text of its turn) appears in the thread. It is
+  asked to keep each answer to a sentence or two.
+- **Which session is copied:** the newest session of the first of these that
+  has one: the Claude Code terminals in the diff's space, the Claude Code
+  terminals inside the repository, then the repository and its main checkout
+  (a session that made a worktree keeps its sessions where it started). The
+  copy runs as a sub-agent of that terminal and outlives it.
 - **Reply** in the box at the end of an answered thread (or click anywhere on
-  the thread). A reply goes to the same copy, so the thread keeps its own
-  conversation.
-- **Ask for work, and it goes to the right session.** The copy knows the name
-  (its terminal's title) and the id of the session it was copied from. It
-  doesn't do work itself: when you ask for a change, it says it passed it on
-  and the mod types the request into that session's terminal with
-  `hc send`, which waits while you are typing there and never answers a
-  dialog. The thread shows *Passed to <name>: <request>*. Without a Claude
-  Code terminal for that session, nothing is sent.
-- **Right-click a thread** to reply, ask again after a failed answer, copy the
-  answer, or delete the thread. Deleting also deletes the copy's session, so it
-  doesn't stay in `claude --resume`.
+  the thread). The reply is typed into the copy's terminal (`hc send`, which
+  waits while you are typing there). When that session was closed, the reply
+  opens it again.
+- **When it needs you** (a permission prompt), the thread says *Waiting for
+  you in its session*. **Right-click → Open session** shows its terminal.
+- **Right-click a thread** to open its session, reply, ask again after a
+  failure, copy the answer, or delete the thread. Deleting ends the session and
+  deletes its files, so it doesn't stay in `claude --resume`.
 - **Local only.** Comments are saved in the repository's git folder
   (`.git/git-changes-comments.json`), never in the worktree, GitHub or GitLab.
   A comment follows its line by the line's text, so it stays in place when
@@ -182,14 +183,15 @@ the repository it does three things:
   it holds more than 300 files. It works on this computer only.
 - *Open folder* starts `xdg-open`, `open` or `explorer` on the folder.
 - *Open in terminal* runs Herdr's `tab.new` for the folder.
-- A comment on a line runs `claude -p` with the comment as an argument, through
-  `sh -c 'exec claude "$@" < /dev/null'` so it doesn't wait for input. To find
-  the session to fork, it runs a fixed `sh -c` script that lists the newest
-  `*.jsonl` files in Claude Code's `projects` folder
-  (`$CLAUDE_CONFIG_DIR`, else `~/.claude`). Deleting a thread runs `rm` on that
-  thread's own session files there, and on nothing else. A request the copy
-  passes on is typed into the original session's terminal with `hc send`. The answers cost
-  tokens on your Claude account, like any other `claude -p` call.
+- A comment on a line starts `claude --resume <session> --fork-session
+  --session-id <id> -- <comment>` with `hc run --bg`, as a sub-agent of the
+  session's terminal, and types replies into it with `hc send`. To find the
+  session to fork, it runs a fixed `sh -c` script that lists the newest
+  `*.jsonl` files in Claude Code's `projects` folder (`$CLAUDE_CONFIG_DIR`,
+  else `~/.claude`); it reads answers with `tail` of the copy's own file there.
+  Deleting a thread runs `hc kill` on its terminal and `rm` on that thread's
+  own session files, and on nothing else. The copy is a full Claude Code
+  session: it costs tokens like one and may change files as you ask it to.
 
 ## Install
 
@@ -328,9 +330,11 @@ Herdr does. It clicks through:
 - History;
 - Open folder and Open in terminal;
 - image diffs: modified, added, deleted, in a commit and in a stash;
-- comment threads, with a stand-in `claude`: the fork of the newest session,
-  replies on the same copy, a second thread that skips the first copy, a thread
-  that follows its line, Ask again, Delete thread, and the side picked in two
+- comment threads, with a stand-in `hc` and session files: the interactive
+  fork started as a sub-agent, its answer read back, replies typed into it or
+  reopening it, a second thread that skips the copies, waiting for permission
+  and Open session, a thread that follows its line, Ask again, a session closed
+  without an answer, Delete thread, worktrees, and the side picked in two
   columns.
 
 None needs Herdr. CI runs all three on every push.
