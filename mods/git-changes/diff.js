@@ -512,7 +512,7 @@ export class DiffView {
     const text = (b) => (b.spinner
       ? h_flex().h(LINE).gap(6).items_center().text_color(tones[b.tone])
         .child(div().w(12).flex_none().text_color(t.accent).frames(SPINNER, SPINNER_MS)).child(b.text)
-      : div().line_height(LINE).text_color(tones[b.tone]).when(Boolean(b.single), (e) => e.truncate()).child(b.text));
+      : div().line_height(`${LINE}px`).text_color(tones[b.tone]).when(Boolean(b.single), (e) => e.truncate()).child(b.text));
     const blocks = this.blocksOf(entry).map((b) => v_flex().flex_none().h(C.blockLines(b, columns) * LINE).overflow_hidden()
       .when(Boolean(b.label), (e) => e.child(div().h(LINE).flex_none().text_size(11).font_semibold().text_color(b.label === "Claude" ? t.accent : t.muted).child(b.label)))
       .child(text(b)));

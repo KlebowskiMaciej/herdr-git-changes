@@ -721,6 +721,8 @@ await test("a comment on a line asks a copy of the newest Claude Code session an
   assert.ok(all.includes("Why uppercase?") && all.includes("Because TWO reads as a constant."), "question and answer shown");
   assert.equal(list.keys[list.keys.indexOf(lineKey(talk, "TWO")) + 1], threadKeys(talk)[0], "the thread sits right under its line");
   assert.ok(!list.keys.includes("compose"), "the box closed after sending");
+  const lineHeights = walk(tree).flatMap((n) => n.props.line_height ?? []);
+  assert.ok(lineHeights.length && lineHeights.every((h) => typeof h === "string" && h.endsWith("px")), "a bare number is a multiplier in Herdr: line heights are pixels");
   const [saved] = savedComments();
   assert.equal(saved.session, FIRST_COPY);
   assert.deepEqual(saved.thread.map((m) => m.from), ["you", "claude"]);
