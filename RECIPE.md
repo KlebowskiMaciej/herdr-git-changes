@@ -285,7 +285,10 @@ hint in 11px `dim`. Danger items are `ansi1`.
     its main checkout (`rev-parse --git-common-dir`). Then it runs
     `claude -p --resume <id> --fork-session --output-format json --tools
     Read,Grep,Glob --append-system-prompt <short> -- <prompt>`. Replies run the
-    same without `--fork-session`, on the thread's own copy.
+    same without `--fork-session`, on the thread's own copy. The comment keeps
+    `origin` (the forked session, its terminal and its title). When an answer
+    ends with `HANDOFF: <request>`, that line is cut off and the request goes to
+    `hc send <origin terminal> <text>`.
   - `menu.js`: menus.
   - `git.js`: parsing, `fileTree()` (folders first, single-folder chains
     merged, folded paths skipped, each folder's staged state), `splitRows()`
@@ -365,6 +368,9 @@ hint in 11px `dim`. Danger items are `ansi1`.
 - **The comment icon shows on hover without a group-hover.** A line row's
   text colour is transparent and its hover style sets the accent; the icon has
   no colour of its own, so it inherits it. Every other cell sets its own colour.
+- **The copy ignores the hand-off rule in its instructions alone.** With only
+  `--append-system-prompt`, it offered to edit the file itself. The rule is
+  repeated at the end of every message it gets, and then it hands off.
 - **`line_height(18)` is 18 lines, not 18px.** A bare number is a multiplier.
   The thread text was pushed out of its card and only the labels showed. Pass
   `"18px"`.

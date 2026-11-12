@@ -81,6 +81,7 @@ export const notify = (n) => { H.notes.push(n); return ""; };
 export const openOverlay = (spec) => { H.overlays.push(spec); return "o1"; };
 export const closeOverlay = () => null;
 export const exec = (cmd, args, opts) => H.exec(cmd, args, opts);
+export const hc = (args) => H.hc(args);
 export const readTextFile = (p) => H.read(p);
 export const writeTextFile = (p, text, expected) => H.write(p, text, expected);
 export const watchFolder = () => new Promise(() => {});
@@ -107,6 +108,8 @@ const H = globalThis.__herdr = {
     return { code: r.status, stdout: r.stdout, stderr: r.stderr };
   },
   claude: () => ({ code: 1, stdout: "", stderr: "no claude here" }),
+  sent: [],
+  hc: async (args) => { H.sent.push(args); return { code: 0, stdout: "", stderr: "" }; },
   read: async (p) => { try { return readFileSync(p, "utf8"); } catch { return null; } },
   write: async (p, text, expected) => {
     const now = await H.read(p);
@@ -844,13 +847,41 @@ await test("a Claude Code terminal in the diff's space is the session forked, wh
   writeFileSync(join(dir, `${own}.jsonl`), "{}\n");
   const at = new Date(Date.now() - 3600 * 1000); utimesSync(join(dir, `${own}.jsonl`), at, at);
   const saved = H.panes;
-  H.panes = [...saved, { pane: "p9", tab: "tb1", terminal: "t9", cwd: elsewhere, app: "claude-code", focused: false }];
+  H.panes = [...saved, { pane: "p9", tab: "tb1", terminal: "t9", cwd: elsewhere, app: "claude-code", title: "✳ Review MR 2149", focused: false }];
   try {
     const view = await openTalk();
     answer(SECOND_COPY, "Sure.");
     await comment(view, lineKey(view, "one"), "Keep this?");
     assert.deepEqual([asked.at(-1).args[2], asked.at(-1).cwd], [own, elsewhere]);
+    talk = view;
   } finally { H.panes = saved; }
+});
+
+await test("the copy knows the session it came from, and passes a request for work on to that session's terminal", async () => {
+  const key = threadKeys(talk).find((k) => talk.commentById(k.slice(1)).text === "one");
+  const style = (args) => args[args.indexOf("--append-system-prompt") + 1];
+  assert.match(style(asked.at(-1).args), /copy of the Claude Code session "Review MR 2149" \(44444444-[^)]+\), which still runs/);
+  answer(SECOND_COPY, "I passed it on to the session.\nHANDOFF: Delete the line `one` in notes.ts.");
+  H.sent = [];
+  await comment(talk, key, "Please remove it");
+  assert.match(style(asked.at(-1).args), /HANDOFF:/, "replies keep the hand-off instructions");
+  assert.equal(H.sent.length, 1);
+  assert.deepEqual(H.sent[0].slice(0, 2), ["send", "t9"]);
+  assert.match(H.sent[0][2], /notes\.ts line 2.*Delete the line `one` in notes\.ts\.$/);
+  const all = texts(talk.render(cx));
+  assert.ok(all.includes("I passed it on to the session."), "the answer, without its HANDOFF line");
+  assert.ok(all.includes("Passed to Review MR 2149: Delete the line `one` in notes.ts."));
+  assert.ok(!all.some((t) => t.startsWith("HANDOFF")));
+});
+
+await test("an answered thread ends with a Reply box that opens the reply under it", async () => {
+  const key = threadKeys(talk)[0];
+  assert.ok(texts(talk.render(cx)).includes("Reply…"));
+  diffList(talk.render(cx)).handlers.item_click(key, cx);
+  const list = diffList(talk.render(cx));
+  assert.equal(list.keys[list.keys.indexOf(key) + 1], "compose", "the reply box opens right under the thread");
+  assert.equal(texts(talk.render(cx)).filter((t) => t === "Reply…").length, threadKeys(talk).length - 1, "the thread being answered hides its Reply box");
+  talk.closeComposer();
 });
 
 rmSync(base, { recursive: true, force: true });

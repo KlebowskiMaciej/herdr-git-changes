@@ -95,8 +95,16 @@ the next click.
   and its main checkout (a session that made a worktree keeps its sessions
   where it started). It knows what that session knows, and the session itself does not
   change. The copy can only read files (`Read`, `Grep`, `Glob`).
-- **Click a thread** to reply. A reply goes to the same copy, so the thread
-  keeps its own conversation.
+- **Reply** in the box at the end of an answered thread (or click anywhere on
+  the thread). A reply goes to the same copy, so the thread keeps its own
+  conversation.
+- **Ask for work, and it goes to the right session.** The copy knows the name
+  (its terminal's title) and the id of the session it was copied from. It
+  doesn't do work itself: when you ask for a change, it says it passed it on
+  and the mod types the request into that session's terminal with
+  `hc send`, which waits while you are typing there and never answers a
+  dialog. The thread shows *Passed to <name>: <request>*. Without a Claude
+  Code terminal for that session, nothing is sent.
 - **Right-click a thread** to reply, ask again after a failed answer, copy the
   answer, or delete the thread. Deleting also deletes the copy's session, so it
   doesn't stay in `claude --resume`.
@@ -179,7 +187,8 @@ the repository it does three things:
   the session to fork, it runs a fixed `sh -c` script that lists the newest
   `*.jsonl` files in Claude Code's `projects` folder
   (`$CLAUDE_CONFIG_DIR`, else `~/.claude`). Deleting a thread runs `rm` on that
-  thread's own session files there, and on nothing else. The answers cost
+  thread's own session files there, and on nothing else. A request the copy
+  passes on is typed into the original session's terminal with `hc send`. The answers cost
   tokens on your Claude account, like any other `claude -p` call.
 
 ## Install
