@@ -684,9 +684,9 @@ const answer = (session, result) => answers.push({ code: 0, stdout: JSON.stringi
 const asked = [];
 H.claude = (args, cwd) => { asked.push({ args, cwd }); return answers.shift() ?? { code: 1, stdout: "", stderr: "Claude Code is not signed in" }; };
 
-const openTalk = async () => {
+const openTalk = async (root = talkRepo) => {
   const saved = H.currentProps;
-  H.shared["git-changes.view"] = { sp1: { item: { area: "file", path: "notes.ts", status: "M", staged: "none" }, source: { root: talkRepo, on: null }, at: Date.now(), tab: "tb9" } };
+  H.shared["git-changes.view"] = { sp1: { item: { area: "file", path: "notes.ts", status: "M", staged: "none" }, source: { root, on: null }, at: Date.now(), tab: "tb9" } };
   H.currentProps = { role: "diff", space: "sp1" };
   const view = new DiffView(); view.init(cx); await settle();
   H.currentProps = saved;
@@ -821,6 +821,36 @@ await test("a long answer makes its thread taller, wrapped at the card's width",
   talk.bodyWidth = 300; talk.imageVersion++;
   const narrow = diffList(talk.render(cx));
   assert.ok(narrow.sizes[at] > list.sizes[at], `${narrow.sizes[at]} > ${list.sizes[at]}`);
+});
+
+await test("in a linked worktree, the session comes from the main checkout, where Claude Code started", async () => {
+  const worktree = join(base, "talk-worktree");
+  talkGit("worktree", "add", "-q", worktree, "-b", "review");
+  writeFileSync(join(worktree, "notes.ts"), "one\nTwo\nthree\n");
+  const view = await openTalk(worktree);
+  answer(SECOND_COPY, "Fine.");
+  await comment(view, lineKey(view, "Two"), "Title case?");
+  const { args, cwd } = asked.at(-1);
+  assert.equal(cwd, talkRepo);
+  assert.ok([MAIN_SESSION, FIRST_COPY].includes(args[2]) && args.includes("--fork-session"), args.join(" "));
+  assert.ok(texts(view.render(cx)).includes("Fine."));
+});
+
+await test("a Claude Code terminal in the diff's space is the session forked, wherever it runs", async () => {
+  const elsewhere = join(base, "elsewhere"), own = "44444444-4444-4444-8444-444444444444";
+  mkdirSync(elsewhere);
+  const dir = join(claudeHome, "projects", elsewhere.replace(/[^A-Za-z0-9]/g, "-"));
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${own}.jsonl`), "{}\n");
+  const at = new Date(Date.now() - 3600 * 1000); utimesSync(join(dir, `${own}.jsonl`), at, at);
+  const saved = H.panes;
+  H.panes = [...saved, { pane: "p9", tab: "tb1", terminal: "t9", cwd: elsewhere, app: "claude-code", focused: false }];
+  try {
+    const view = await openTalk();
+    answer(SECOND_COPY, "Sure.");
+    await comment(view, lineKey(view, "one"), "Keep this?");
+    assert.deepEqual([asked.at(-1).args[2], asked.at(-1).cwd], [own, elsewhere]);
+  } finally { H.panes = saved; }
 });
 
 rmSync(base, { recursive: true, force: true });

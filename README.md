@@ -88,9 +88,12 @@ the next click.
   keeps its icon in the accent colour. Enter sends, Shift+Enter starts a new
   line, Esc closes the box. In two columns, click the side you mean.
 - **A copy of your Claude Code session answers** in one or two sentences, right
-  under your comment. A spinner shows there until the answer comes. The copy is a fork of the newest Claude Code session
-  started in the repository (or in a folder of it where a Claude Code terminal
-  runs). It knows what that session knows, and the session itself does not
+  under your comment. A spinner shows there until the answer comes. The copy
+  is a fork of the newest Claude Code session of the first of these that has
+  one: the Claude Code terminals in the diff's
+  space, the Claude Code terminals inside the repository, then the repository
+  and its main checkout (a session that made a worktree keeps its sessions
+  where it started). It knows what that session knows, and the session itself does not
   change. The copy can only read files (`Read`, `Grep`, `Glob`).
 - **Click a thread** to reply. A reply goes to the same copy, so the thread
   keeps its own conversation.

@@ -215,7 +215,7 @@ export class DiffView {
   ask(id, cx) {
     const comment = this.commentById(id);
     if (!comment || this.asking.has(id)) return;
-    const source = { root: this.root, on: this.on, taken: new Set(this.comments.map((c) => c.session).filter(Boolean)) };
+    const source = { root: this.root, on: this.on, space: this.space, taken:new Set(this.comments.map((c) => c.session).filter(Boolean)) };
     const file = this.commentsFile;
     this.asking.add(id); this.failures.delete(id); this.changed();
     cx.spawn(async (cx) => {

@@ -10,7 +10,7 @@
 // (`claude -p --resume <id> --fork-session`): the copy knows what that session
 // knows, and the session itself is left as it was. Later replies resume the
 // copy. The copy may only read files, and answers in a sentence or two.
-import { exec, readTextFile, writeTextFile, panes } from "herdr";
+import { exec, readTextFile, writeTextFile, panes, spaces } from "herdr";
 
 export const COMMENTS_FILE = "git-changes-comments.json";
 const ANSWER_TOOLS = "Read,Grep,Glob";
@@ -134,21 +134,47 @@ export function parseAnswer({ code, stdout, stderr }) {
 export const projectDir = (cwd) => cwd.replace(/[^A-Za-z0-9]/g, "-");
 
 const runsClaude = (pane) => pane.app === "claude-code" || pane.program?.key === "claude";
-const isInside = (root, dir) => dir === root || Boolean(dir?.startsWith(`${root}/`));
+const isInside = (root, dir) => Boolean(root && dir && (dir === root || dir.startsWith(`${root}/`)));
+
+/** The main checkout of the repository at `root`, which differs from `root` in a linked worktree; null when unknown. */
+async function mainCheckout(root, on) {
+  const r = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root, on });
+  const common = r.code === 0 ? r.stdout.trim() : "";
+  return common.endsWith("/.git") ? common.slice(0, -"/.git".length) : null;
+}
 
 /**
- * The newest Claude Code session started in the repository or in a folder of it
- * where a Claude Code terminal runs, and that folder; null when there is none.
- * Sessions in `taken` (the copies this panel made) are skipped.
+ * Where to look for the session to fork, most fitting first: the folders of the
+ * Claude Code terminals in the diff's space, then those inside the repository,
+ * then the repository and its main checkout (a Claude Code session that made a
+ * worktree keeps its sessions under the folder it started in).
  */
-export async function findSession(root, on, taken) {
-  const folders = [...panes().filter((p) => runsClaude(p) && isInside(root, p.cwd)).map((p) => p.cwd), root];
-  const byDir = new Map(folders.map((cwd) => [projectDir(cwd), cwd]));
-  const r = await exec("sh", ["-c", NEWEST_SESSIONS, "sh", ...byDir.keys()], { on });
-  for (const line of r.stdout.split("\n")) {
-    const [dir, file] = line.split("/");
-    const session = file?.replace(/\.jsonl$/, "");
-    if (session && byDir.has(dir) && !taken.has(session)) return { session, cwd: byDir.get(dir) };
+function sessionFolders(root, main, space) {
+  const tabs = new Set(spaces().find((s) => s.id === space)?.tabs.map((t) => t.id) ?? []);
+  const claude = panes().filter((p) => runsClaude(p) && p.cwd);
+  return [
+    claude.filter((p) => tabs.has(p.tab)).map((p) => p.cwd),
+    claude.filter((p) => isInside(root, p.cwd) || isInside(main, p.cwd)).map((p) => p.cwd),
+    [root, main].filter(Boolean),
+  ];
+}
+
+/**
+ * The session to fork and the folder it started in, or null when there is none:
+ * the newest session in the first group of `sessionFolders` that has one.
+ * Sessions in `taken` (the copies threads made) are skipped.
+ */
+export async function findSession({ root, on, space, taken }) {
+  const tiers = sessionFolders(root, await mainCheckout(root, on).catch(() => null), space)
+    .map((folders) => new Map(folders.map((cwd) => [projectDir(cwd), cwd])));
+  const dirs = new Set(tiers.flatMap((tier) => [...tier.keys()]));
+  const r = await exec("sh", ["-c", NEWEST_SESSIONS, "sh", ...dirs], { on });
+  const newest = r.stdout.split("\n").map((line) => line.split("/"))
+    .map(([dir, file]) => ({ dir, session: file?.replace(/\.jsonl$/, "") }))
+    .filter(({ session }) => session && !taken.has(session));
+  for (const tier of tiers) {
+    const found = newest.find(({ dir }) => tier.has(dir));
+    if (found) return { session: found.session, cwd: tier.get(found.dir) };
   }
   return null;
 }
@@ -157,10 +183,10 @@ export async function findSession(root, on, taken) {
 const runClaude = (args, cwd, on) => exec("sh", ["-c", RUN_CLAUDE, "sh", ...args], { cwd, on, timeout: ASK_TIMEOUT });
 
 /** Sends the thread's open question to Claude Code and resolves with `{ text, session, cwd }`. */
-export async function askClaude(comment, { root, on, taken }) {
-  const question = lastFrom(comment, "you");
+export async function askClaude(comment, source) {
+  const question = lastFrom(comment, "you"), { root, on } = source;
   if (comment.session) return { ...parseAnswer(await runClaude(askArgs(question, comment.session, false), comment.cwd, on)), cwd: comment.cwd };
-  const found = await findSession(root, on, taken);
+  const found = await findSession(source);
   if (!found) throw new Error(`No Claude Code session found for ${root}. Start one there first.`);
   return { ...parseAnswer(await runClaude(askArgs(questionPrompt(comment, question), found.session, true), found.cwd, on)), cwd: found.cwd };
 }

@@ -279,8 +279,10 @@ hint in 11px `dim`. Danger items are `ansi1`.
     saves `<git dir>/git-changes-comments.json` with `writeTextFile` and its
     stale-snapshot retry, and asks Claude Code. The first question finds the
     newest `*.jsonl` session in `${CLAUDE_CONFIG_DIR:-~/.claude}/projects/<cwd
-    with every non-alphanumeric as ->` for the repository and for every Claude
-    Code pane inside it, skipping the copies threads already made, then runs
+    with every non-alphanumeric as ->`, skipping the copies threads already
+    made, in the first group that has one: the Claude Code panes of the diff's
+    space, the Claude Code panes inside the repository, then the repository and
+    its main checkout (`rev-parse --git-common-dir`). Then it runs
     `claude -p --resume <id> --fork-session --output-format json --tools
     Read,Grep,Glob --append-system-prompt <short> -- <prompt>`. Replies run the
     same without `--fork-session`, on the thread's own copy.
