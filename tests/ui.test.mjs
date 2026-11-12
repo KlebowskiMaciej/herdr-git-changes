@@ -315,6 +315,48 @@ await test("History renders the graph and a commit opens in the diff tab", async
   assert.ok(opened && /^[0-9a-f]{7}$/.test(opened[1].name), "named after the short hash");
 });
 
+await test("Repo lists every file the branch changed since main, committed or not, and opens its diff against the merge base", async () => {
+  const branchRepo = join(base, "branch-repo"), bgit = (...a) => execFileSync("git", a, { cwd: branchRepo, env, encoding: "utf8" });
+  mkdirSync(join(branchRepo, "lib"), { recursive: true });
+  bgit("init", "-q", "-b", "main");
+  writeFileSync(join(branchRepo, "base.txt"), "one\n"); bgit("add", "."); bgit("commit", "-qm", "base");
+  const mergeBase = bgit("rev-parse", "HEAD").trim();
+  bgit("switch", "-qc", "feature");
+  writeFileSync(join(branchRepo, "lib/done.ts"), "done\n"); bgit("add", "."); bgit("commit", "-qm", "feature work");
+  writeFileSync(join(branchRepo, "base.txt"), "one\ntwo\n"); writeFileSync(join(branchRepo, "loose.md"), "l\n");
+  const savedProps = H.currentProps, savedTab = panel.tab;
+  try {
+    H.currentProps = { folder: branchRepo };
+    click(panel.render(cx), "tab-repo");
+    await settle();
+    let tree = panel.render(cx);
+    const all = texts(tree);
+    assert.ok(["lib", "done.ts", "base.txt", "loose.md"].every((name) => all.includes(name)), "committed, modified and untracked files");
+    assert.ok(all.includes("3 since main"), "the count and the base in the toolbar");
+    assert.ok(!byId(tree, "stage-lib/done.ts") && !byId(tree, "discard-base.txt"), "no staging or discard on the branch's files");
+    const list = walk(tree).find((n) => n.kind === "list" && n.id === panel.repoListId);
+    list.handlers.item_click("folder:branch:lib", cx);
+    assert.ok(!texts(panel.render(cx)).includes("done.ts"), "a folder folds");
+    list.handlers.item_click("folder:branch:lib", cx);
+    H.runs = []; H.shared["git-changes.view"] = {};
+    list.handlers.item_click("file:lib/done.ts", cx);
+    const shown = H.shared["git-changes.view"].sp1.item;
+    assert.deepEqual([shown.area, shown.path, shown.base, shown.baseName], ["base-file", "lib/done.ts", mergeBase, "main"]);
+    assert.ok(byId(panel.render(cx), "in-file:lib/done.ts").props.border_color[0] === "#accent", "the shown file is highlighted");
+    const view = new DiffView();
+    H.currentProps = { role: "diff", space: "sp1" };
+    view.init(cx); await settle();
+    tree = view.render(cx);
+    assert.ok(texts(tree).includes("done") && texts(tree).some((s) => s.startsWith("Working tree against main")), "the file's diff against the merge base");
+    H.currentProps = { folder: branchRepo };
+    click(panel.render(cx), "view-diff-base");
+    assert.equal(H.shared["git-changes.view"].sp1.item.area, "base");
+  } finally {
+    H.currentProps = savedProps;
+    panel.setTab(savedTab, cx); await settle();
+  }
+});
+
 await test("a confirmed file menu cannot discard in a different repository", async () => {
   const other = join(base, "other");
   execFileSync("git", ["clone", "-q", repo, other], { env });

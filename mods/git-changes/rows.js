@@ -50,6 +50,14 @@ export function buildRows({ entries, stashes, listMode, folded, collapsed }) {
   return { rows, byKey: new Map(rows.map((row) => [row.key, row])) };
 }
 
+export const BRANCH = "branch";
+
+/** The Repo tab's rows: the branch's files as a tree (folding kept with the "branch:" keys of `folded`) or a flat list. */
+export function buildBranchRows({ entries, listMode, folded }) {
+  const rows = listMode === "flat" ? entries.map((entry) => fileRow(entry, 0, BRANCH)) : treeRows(BRANCH, entries, folded);
+  return { rows, byKey: new Map(rows.map((row) => [row.key, row])) };
+}
+
 /** The files a folder row stands for. */
 export const filesInside = (row) => row.list.filter((e) => e.path.startsWith(`${row.path}/`));
 

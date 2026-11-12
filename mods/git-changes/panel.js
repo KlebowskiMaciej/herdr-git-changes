@@ -1,4 +1,4 @@
-// The panel, laid out like Zed's git panel: Changes and History tabs; a
+// The panel, laid out like Zed's git panel: Changes, Repo and History tabs; a
 // toolbar with View Diff, the tree/flat and one/two-column switches, and
 // Stage All; the files grouped Conflicts, Tracked, Untracked, as a folder tree
 // or a flat list, each with a staging checkbox, then the stashes; and at the
@@ -19,7 +19,7 @@ import * as G from "./git.js";
 import { icon, menuHeight } from "./menu.js";
 import { showInTab, shownIn, shownSource, getLayout, setLayout } from "./diff.js";
 import { History } from "./history.js";
-import { ROW, OUTER, START, PAD, INDENT, BOX, ACTION, COUNT, COUNT_GAP, buildRows, filesInside, zoneAt } from "./rows.js";
+import { ROW, OUTER, START, PAD, INDENT, BOX, ACTION, COUNT, COUNT_GAP, BRANCH, buildRows, buildBranchRows, filesInside, zoneAt } from "./rows.js";
 
 // The focused terminal's folder, or `props.folder` when opened as a pane on one repository.
 function location() {
@@ -44,11 +44,31 @@ const FILE_OPENERS = { linux: "xdg-open", macos: "open", windows: "explorer" };
 const OPEN_TIMEOUT = 10000;
 const baseName = (path) => path.split("/").filter(Boolean).pop() ?? path;
 const isTimeout = (e) => /time/i.test(String(e?.message ?? e));
+const sumOf = (entries, field) => entries.reduce((n, e) => n + e[field], 0);
+const failedRead = (error, base = null) => ({ base, error, entries: [], signature: error });
+
+/** What the Repo tab lists: every file changed since the branch left its base, or why there's nothing to compare. */
+async function readBranchFiles(git, status) {
+  if (!status.branch.oid) return failedRead("No commits yet");
+  const refs = await git(G.BASE_REFS), base = refs.code === 0 ? G.pickBase(refs.stdout) : null;
+  if (!base) return failedRead("No main or master branch to compare with");
+  const found = await git(G.mergeBaseArgs(base));
+  if (found.code !== 0) return failedRead(`No commit in common with ${base}`, base);
+  const mergeBase = found.stdout.trim();
+  const [names, stats] = await Promise.all([git(G.baseNameStatusArgs(mergeBase)), git(G.baseNumstatArgs(mergeBase))]);
+  if (names.code !== 0) throw new Error(G.gitError(names));
+  const untracked = status.entries.filter((e) => e.untracked), numstat = stats.code === 0 ? stats.stdout : "";
+  const entries = G.branchEntries(names.stdout, numstat, untracked);
+  return { base, mergeBase, entries: entries.slice(0, G.LIMIT), limited: entries.length > G.LIMIT,
+    signature: [base, mergeBase, names.stdout, numstat, untracked.map((e) => e.path).join("\0")].join("\x1f") };
+}
 
 export class Panel {
   init(cx) {
     this.uid = `gc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     this.listId = `gc-rows-${Math.random().toString(36).slice(2)}`;
+    this.repoListId = `gc-repo-${Math.random().toString(36).slice(2)}`;
+    this.repo = null; this.repoModel = null;
     this.model = null; this.press = null; this.signature = null;
     this.entries = []; this.stashes = []; this.remotes = []; this.last = null;
     this.history = new History(); this.panelWidth = 400;
@@ -94,6 +114,14 @@ export class Panel {
     this.menuActions = {}; this.armed = null;
     this.root = null; this.branch = null; this.entries = []; this.stashes = []; this.last = null; this.history.clear();
     this.limited = false; this.model = null; this.signature = null; this.press = null;
+    this.repo = null; this.repoModel = null;
+  }
+
+  /** Keeps the Repo tab's new read; false when it's the same as the last one. */
+  takeRepo(next) {
+    if (next.signature === this.repo?.signature) return false;
+    this.repo = next; this.repoModel = null;
+    return true;
   }
 
   refresh(cx) {
@@ -124,8 +152,11 @@ export class Panel {
         // The graph is read only while it shows; switching to it reads it.
         const historyMoved = this.tab === "history" && await this.history.read(git, { changes: s.entries.length, head: s.branch.oid, upstream: s.branch.upstream });
         if (key() !== context) return;
+        const repoRead = this.tab === "repo" ? await readBranchFiles(git, s) : null;
+        if (key() !== context) return;
+        const repoMoved = Boolean(repoRead) && this.takeRepo(repoRead);
         const signature = [status.stdout, ...stats.map((r) => r.stdout), stash.stdout, remote.stdout, last?.stdout ?? "", Math.floor(Date.now() / 60000)].join("\x1f");
-        if (!historyMoved && signature === this.signature && this.root === root && !this.error) { changed = false; return; }
+        if (!historyMoved && !repoMoved && signature === this.signature && this.root === root && !this.error) { changed = false; return; }
         this.signature = signature;
         const numstat = G.parseNumstat(...stats.filter((r) => r.code === 0).map((r) => r.stdout));
         this.entries = s.entries.slice(0, G.LIMIT).map((e) => ({ ...e, area: "file", add: 0, del: 0, ...(numstat[e.path] ?? {}) }));
@@ -151,6 +182,15 @@ export class Panel {
   rowsModel() {
     if (!this.model) this.model = buildRows({ entries: this.entries, stashes: this.stashes, listMode: this.listMode, folded: this.folded, collapsed: this.collapsed });
     return this.model;
+  }
+
+  repoRowsModel() {
+    if (!this.repoModel) this.repoModel = buildBranchRows({ entries: this.repo?.entries ?? [], listMode: this.listMode, folded: this.folded });
+    return this.repoModel;
+  }
+
+  pickBranch(fields, cx) {
+    this.pick({ ...fields, base: this.repo.mergeBase, baseName: this.repo.base }, cx);
   }
 
   // Show it in the main area: one diff tab per space, reused and renamed.
@@ -266,10 +306,10 @@ export class Panel {
     this.act(cx, all ? "Unstage" : "Stage", [all ? (this.hasHead ? ["restore", "--staged", "--", ...paths] : ["rm", "--cached", "-q", "-r", "--", ...paths]) : ["add", "-A", "--", ...paths]]);
   }
 
-  setListMode(mode, cx) { this.listMode = mode; this.model = null; localStorage.setItem("list", mode); cx.notify(); }
+  setListMode(mode, cx) { this.listMode = mode; this.model = null; this.repoModel = null; localStorage.setItem("list", mode); cx.notify(); }
   fold(key, cx) {
     if (this.folded.has(key)) this.folded.delete(key); else this.folded.add(key);
-    this.model = null;
+    this.model = null; this.repoModel = null;
     localStorage.setItem("folded", JSON.stringify([...this.folded]));
     cx.notify();
   }
@@ -525,7 +565,7 @@ export class Panel {
 
   folderRowView(row, t) {
     return this.rowBody(row.key, t, { gap: 6, depth: row.depth, tip: row.path })
-      .child(this.checkboxView(`stage-dir-${row.key}`, row.staged, t))
+      .when(row.area !== BRANCH, (el) => el.child(this.checkboxView(`stage-dir-${row.key}`, row.staged, t)))
       .child(svg(icon(row.open ? "chevron-down" : "chevron-right")).size(11).flex_none().text_color(t.dim))
       .child(svg(icon("folder")).size(13).flex_none().text_color(t.muted))
       .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(row.name))
@@ -533,10 +573,10 @@ export class Panel {
   }
 
   fileRowView(row, t, selected) {
-    const e = row.entry, armed = this.armed === `discard-${e.path}`;
+    const e = row.entry, armed = this.armed === `discard-${e.path}`, staging = row.area !== BRANCH;
     const color = e.conflict || e.status === "D" ? t.ansi1 : e.untracked || e.status === "A" ? t.ansi2 : t.blocked;
     return this.rowBody(row.key, t, { selected, depth: row.depth, tip: e.path })
-      .child(this.checkboxView(`stage-${e.path}`, e.staged, t))
+      .when(staging, (el) => el.child(this.checkboxView(`stage-${e.path}`, e.staged, t)))
       .child(div().w(10).flex_none().text_size(11).text_color(color).child(e.untracked ? "U" : e.status))
       .child(h_flex().flex_1().min_w(0).items_center()
         .child(div().max_w(240).min_w(0).truncate().text_color(e.status === "D" ? t.muted : t.foreground).when(e.status === "D", (el) => el.line_through()).child(row.name))
@@ -545,7 +585,7 @@ export class Panel {
       .when(!armed && !e.untracked, (el) => el
         .child(div().text_size(11).text_color(t.ansi2).child(`+${e.add}`))
         .child(div().text_size(11).text_color(t.ansi1).child(`−${e.del}`)))
-      .child(this.actionIcon(`discard-${e.path}`, e.untracked ? "trash" : "undo", e.untracked ? "Trash file" : "Discard changes", t, { danger: true, armed }));
+      .when(staging, (el) => el.child(this.actionIcon(`discard-${e.path}`, e.untracked ? "trash" : "undo", e.untracked ? "Trash file" : "Discard changes", t, { danger: true, armed })));
   }
 
   stashRowView(row, t, selected) {
@@ -617,6 +657,47 @@ export class Panel {
       .child(Scrollbar.vertical(this.listId).viewport_from_layout().absolute().inset_0());
   }
 
+  repoRowClicked(key, cx) {
+    const row = this.repoRowsModel().byKey.get(key);
+    if (row?.type === "folder") this.fold(`${BRANCH}:${row.path}`, cx);
+    else if (row?.type === "file") this.pickBranch({ ...row.entry, area: "base-file" }, cx);
+  }
+
+  repoRowMenu(key, cx) {
+    const row = this.repoRowsModel().byKey.get(key);
+    if (!row) return;
+    const path = row.type === "file" ? row.entry.path : row.path;
+    const folder = row.type === "file" ? row.dir : row.path;
+    this.menu([
+      row.type === "file" && { label: "Show diff", icon: "diff", run: (cx) => this.repoRowClicked(key, cx) },
+      { separator: true },
+      ...this.folderItems(folder),
+      { separator: true },
+      { label: "Copy path", icon: "copy", copy: path },
+      { label: "Copy full path", icon: "copy", copy: `${this.root}/${path}` },
+    ], cx);
+  }
+
+  repoList(t, shownKey) {
+    const { rows } = this.repoRowsModel(), zoom = settings().zoom ?? 1;
+    const rowPx = Math.max(1, Math.round(ROW * zoom)), height = rowPx / zoom;
+    return div().id("git-changes-repo-rows").flex_1().min_h(0).relative().py(4)
+      .child(v_virtual_list(this.repoListId, rows.length, rowPx, (i) => rows[i].key,
+        (range) => rows.slice(range.start, range.end).map((row) => this.listRow(row, t, shownKey, height)))
+        .on_item_click((key, cx) => this.repoRowClicked(key, cx))
+        .on_item_secondary_click((key, _e, cx) => this.repoRowMenu(key, cx))
+        .size_full())
+      .child(Scrollbar.vertical(this.repoListId).viewport_from_layout().absolute().inset_0());
+  }
+
+  repoView(t, shown) {
+    const view = v_flex().id("git-changes-repo").flex_1().min_h(0), notice = (text) => view.child(div().p(12).text_color(t.dim).child(text));
+    if (!this.repo) return notice("Loading the branch's changes…");
+    if (this.repo.error) return notice(this.repo.error);
+    if (!this.repo.entries.length) return notice(`No changes since ${this.repo.base}`);
+    return view.child(this.repoList(t, shown?.area === "base-file" ? `file:${shown.path}` : null));
+  }
+
   emptyNotice(t) {
     return v_flex().flex_none().py(18).gap(4).items_center().text_color(t.dim)
       .child(div().child("No changes to commit"))
@@ -649,12 +730,37 @@ export class Panel {
       .on_click((_e, cx) => this.setTab(id, cx)).child(label);
     return h_flex().h(34).flex_none().border_b(1).border_color(t.border)
       .child(tab("changes", this.entries.length ? `Changes (${this.entries.length})` : "Changes"))
+      .child(tab("repo", "Repo"))
       .child(tab("history", "History"));
+  }
+
+  lineCounts(entries, t) {
+    return h_flex().pl(4).gap(4).items_center().text_size(11)
+      .child(div().text_color(t.ansi2).child(`+${sumOf(entries, "add")}`))
+      .child(div().text_color(t.ansi1).child(`−${sumOf(entries, "del")}`));
+  }
+
+  viewSwitches(t) {
+    return [
+      this.pills("list", [["tree", "list-tree", "Folder tree"], ["flat", "list", "Flat list"]], this.listMode, (m, cx) => this.setListMode(m, cx), t),
+      this.pills("layout", [["unified", "rows", "Diff in one column"], ["split", "columns", "Diff in two columns: before | after"]], getLayout(), (m, cx) => { setLayout(m); cx.notify(); }, t),
+    ];
+  }
+
+  repoToolbar(t) {
+    const repo = this.repo, entries = repo?.entries ?? [], any = entries.length > 0 && Boolean(repo.mergeBase);
+    return h_flex().h(32).flex_none().px(8).gap(4).items_center().border_b(1).border_color(t.border)
+      .child(this.iconButton("view-diff-base", "diff", repo?.base ? `Show every change since ${repo.base} in the main area` : "Show every change of the branch",
+        (cx) => this.pickBranch({ area: "base" }, cx), t, { label: "View Diff", disabled: !any }))
+      .when(any, (e) => e.child(this.lineCounts(entries, t)))
+      .child(div().flex_1().min_w(0).truncate().text_right().text_size(11).text_color(t.dim).child(repo?.base ? `${entries.length} since ${repo.base}` : ""))
+      .children(this.viewSwitches(t))
+      .child(this.iconButton("refresh-repo", "refresh", "Refresh", (cx) => this.refresh(cx), t, { disabled: Boolean(this.busy) }));
   }
 
   toolbar(t) {
     const busy = Boolean(this.busy), any = this.entries.length > 0, allStaged = any && this.entries.every((e) => e.staged === "all");
-    const add = this.entries.reduce((n, e) => n + e.add, 0), del = this.entries.reduce((n, e) => n + e.del, 0);
+    if (this.tab === "repo") return this.repoToolbar(t);
     if (this.tab === "history") {
       const h = this.history, n = h.base.length;
       const segment = (id, text, on, all) => div().id(id).h(20).px(8).flex().items_center().rounded(5).text_size(11.5).cursor_pointer()
@@ -670,10 +776,9 @@ export class Panel {
     }
     return h_flex().h(32).flex_none().px(8).gap(4).items_center().border_b(1).border_color(t.border)
       .child(this.iconButton("view-diff", "diff", "Show every change in the main area", (cx) => this.pick({ area: "all" }, cx), t, { label: "View Diff", disabled: !any }))
-      .when(any, (e) => e.child(div().pl(4).text_size(11).text_color(t.ansi2).child(`+${add}`)).child(div().text_size(11).text_color(t.ansi1).child(`−${del}`)))
+      .when(any, (e) => e.child(this.lineCounts(this.entries, t)))
       .child(div().flex_1())
-      .child(this.pills("list", [["tree", "list-tree", "Folder tree"], ["flat", "list", "Flat list"]], this.listMode, (m, cx) => this.setListMode(m, cx), t))
-      .child(this.pills("layout", [["unified", "rows", "Diff in one column"], ["split", "columns", "Diff in two columns: before | after"]], getLayout(), (m, cx) => { setLayout(m); cx.notify(); }, t))
+      .children(this.viewSwitches(t))
       .child(this.iconButton("options", "sliders", "More", (cx) => this.optionsMenu(cx), t))
       .child(this.iconButton("stage-all", allStaged ? "minus" : "plus", allStaged ? "Unstage everything" : "Stage everything",
         (cx) => this.act(cx, allStaged ? "Unstage" : "Stage", allStaged ? G.unstageAllArgs(this.hasHead) : G.stageAllArgs()), t, { label: allStaged ? "Unstage All" : "Stage All", disabled: busy || !any }));
@@ -758,7 +863,8 @@ export class Panel {
     if (changed !== this.seenChange) { this.seenChange = changed; if (!this.busy) this.refresh(cx); }
     this.takePick(cx);
     const t = theme(), shown = this.shown(), shownKey = itemKey(shown);
-    const history = this.tab === "history" && Boolean(this.root);
+    const history = this.tab === "history" && Boolean(this.root), repo = this.tab === "repo" && Boolean(this.root);
+    const limited = this.tab === "repo" ? Boolean(this.repo?.limited) : this.limited;
     const graph = history && (this.history.commits.length
       ? this.historyView(t, shown)
       : div().flex_1().p(12).text_color(t.dim).child(this.hasHead ? "Loading history…" : "No commits yet"));
@@ -776,8 +882,9 @@ export class Panel {
       .child(this.tabs(t))
       .when(Boolean(this.root), (e) => e.child(this.toolbar(t)))
       .when(history, (e) => e.child(v_flex().flex_1().min_h(0).child(graph)))
-      .when(!history, (e) => e.child(this.changesView(t, shownKey)))
-      .when(this.limited, (e) => e.child(div().px(12).py(4).text_size(11).text_color(t.dim).child(`Showing the first ${G.LIMIT.toLocaleString()} files`)))
+      .when(repo, (e) => e.child(this.repoView(t, shown)))
+      .when(!history && !repo, (e) => e.child(this.changesView(t, shownKey)))
+      .when(limited, (e) => e.child(div().px(12).py(4).text_size(11).text_color(t.dim).child(`Showing the first ${G.LIMIT.toLocaleString()} files`)))
       .when(Boolean(this.note), (e) => e.child(div().id("note").px(10).py(6).flex_none().border_t(1).border_color(t.border).text_size(11).text_color(t.ansi1).cursor_pointer().tooltip("Click to dismiss")
         .on_click((_e, cx) => { this.note = null; cx.notify(); }).child(this.note)))
       .when(Boolean(this.root && this.branch), (e) => e.child(v_flex().flex_none().border_t(1).border_color(t.border).bg(t.chrome)

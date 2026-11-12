@@ -5,7 +5,7 @@ import * as G from "../mods/git-changes/git.js";
 import { layoutLanes } from "../mods/git-changes/lanes.js";
 import { tmpdir } from "node:os";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, appendFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 
@@ -331,6 +331,49 @@ test("Revert and the commit's own diff", () => {
   runAll(r, G.revertArgs(two.hash));
   assert.match(run(r, ["log", "-1", "--format=%s"]), /Revert "two"/);
   assert.equal(existsSync(join(r, "two.txt")), false);
+});
+
+// --- the Repo tab: what the branch changed since its base ----------------------------
+
+const baseOf = (cwd) => G.pickBase(run(cwd, [...G.READ, ...G.BASE_REFS]));
+
+test("the base is origin's default branch, else origin/main, else the local main or master", () => {
+  const local = repo("base-local");
+  commit(local, "init");
+  assert.equal(baseOf(local), "main");
+  run(local, ["branch", "-m", "master"]);
+  assert.equal(baseOf(local), "master");
+  run(local, ["branch", "-m", "trunk"]);
+  assert.equal(baseOf(local), null, "no main or master");
+  const remote = repo("base-remote", { remote: true });
+  commit(remote, "init"); run(remote, ["push", "-q", "origin", "main"]); run(remote, ["fetch", "-q"]);
+  assert.equal(baseOf(remote), "origin/main");
+  run(remote, ["push", "-q", "origin", "main:develop"]); run(remote, ["fetch", "-q"]);
+  run(remote, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop"]);
+  assert.equal(baseOf(remote), "origin/develop", "origin/HEAD names the default branch");
+});
+
+test("a branch's files since its base: committed, staged, unstaged and untracked, with their line counts", () => {
+  const r = repo("branch-files");
+  commit(r, "init", "kept.txt"); write(r, "gone.txt", "g\n"); write(r, "edited.txt", "a\n"); run(r, ["add", "."]); run(r, ["commit", "-qm", "more"]);
+  commit(r, "on main later", "main-only.txt");
+  run(r, ["switch", "-qc", "feature", "HEAD~1"]);
+  mkdirSync(join(r, "src")); commit(r, "feature work", "src/new.txt");
+  run(r, ["rm", "-q", "gone.txt"]); run(r, ["commit", "-qm", "drop gone"]);
+  append(r, "edited.txt", "b\nc\n");
+  write(r, "staged.txt", "s\n"); run(r, ["add", "staged.txt"]);
+  write(r, "loose.txt", "l\n");
+  const base = baseOf(r), mergeBase = run(r, G.mergeBaseArgs(base)).trim();
+  const entries = G.branchEntries(run(r, G.baseNameStatusArgs(mergeBase)), run(r, G.baseNumstatArgs(mergeBase)), status(r).entries.filter((e) => e.untracked));
+  assert.deepEqual(entries.map((e) => [e.path, e.status, e.add, e.del, Boolean(e.untracked)]), [
+    ["edited.txt", "M", 2, 0, false], ["gone.txt", "D", 0, 1, false], ["loose.txt", "A", 0, 0, true],
+    ["src/new.txt", "A", 1, 0, false], ["staged.txt", "A", 1, 0, false],
+  ]);
+  assert.ok(!entries.some((e) => e.path === "main-only.txt"), "main's own later work is not the branch's");
+  const rows = G.diffRows(run(r, G.diffArgs({ area: "base-file", base: mergeBase, path: "edited.txt" }, true)[0]).split("\n"));
+  assert.deepEqual(rows.filter((x) => x.kind === "+").map((x) => x.text), ["b", "c"]);
+  const all = run(r, G.diffArgs({ area: "base", base: mergeBase }, true)[0]);
+  assert.ok(all.includes("b/src/new.txt") && all.includes("b/gone.txt") && !all.includes("main-only"));
 });
 
 rmSync(base, { recursive: true, force: true });

@@ -53,6 +53,10 @@ async function untrackedLines(root, on, path) {
   return [...lead, ...(await untrackedBody(root, on, path))];
 }
 
+const showsUntracked = (item) => item.area === "all" || item.area === "base";
+const isSingleFile = (item) => item.area === "file" || item.area === "base-file";
+const isBase = (item) => item.area === "base" || item.area === "base-file";
+
 // The diff's lines, ready for G.diffRows. `untracked` lists the untracked paths an "all" diff shows too.
 export async function loadDiff(item, { root, on, hasHead, untracked = [] }) {
   if (item.untracked) return [...(G.imageType(item.path) ? [diffHeader(item.path)] : []), ...(await untrackedLines(root, on, item.path))];
@@ -62,19 +66,19 @@ export async function loadDiff(item, { root, on, hasHead, untracked = [] }) {
     if (r.code !== 0) throw new Error(G.gitError(r));
     lines.push(...r.stdout.replace(/\n$/, "").split("\n").filter((l, i, a) => l || i < a.length - 1));
   }
-  if (item.area === "all") {
+  if (showsUntracked(item)) {
     for (const path of untracked.slice(0, 50)) lines.push(diffHeader(path), ...(await untrackedLines(root, on, path)));
   }
-  if (item.area === "file" && !lines.some((l) => l.startsWith("@@") || l.startsWith("Binary") || /^[-+ ]?Subproject/.test(l)))
+  if (isSingleFile(item) && !lines.some((l) => l.startsWith("@@") || l.startsWith("Binary") || /^[-+ ]?Subproject/.test(l)))
     lines = [item.submodule ? `Submodule: ${item.submodule}` : item.binary ? "Binary file changed" : "No text diff available"];
   if (!lines.length) lines = ["No changes"];
   return lines.slice(0, MAX).map(clip);
 }
 
-export const itemTitle = (item) => item.area === "all" ? "All changes" : item.area === "stash" ? `${item.ref} · ${item.subject}`
-  : item.area === "commit" ? `${item.short} · ${item.subject}` : item.path;
-export const itemName = (item) => item.area === "all" ? "All changes" : item.area === "stash" ? item.ref
-  : item.area === "commit" ? item.short : item.path.split("/").pop();
+export const itemTitle = (item) => item.area === "all" ? "All changes" : item.area === "base" ? `All changes since ${item.baseName}`
+  : item.area === "stash" ? `${item.ref} · ${item.subject}` : item.area === "commit" ? `${item.short} · ${item.subject}` : item.path;
+export const itemName = (item) => item.area === "all" ? "All changes" : item.area === "base" ? `Since ${item.baseName}`
+  : item.area === "stash" ? item.ref : item.area === "commit" ? item.short : item.path.split("/").pop();
 export const getLayout = () => (shared("git-changes.layout") === "split" ? "split" : "unified");
 export const setLayout = (layout) => setShared("git-changes.layout", layout);
 
@@ -333,7 +337,7 @@ export class DiffView {
         const git = (args) => exec("git", [...G.READ, ...args], { cwd: root, on });
         const head = await git(["rev-parse", "--verify", "-q", "HEAD"]);
         let untracked = [];
-        if (item.area === "all") {
+        if (showsUntracked(item)) {
           const r = await git(["ls-files", "--others", "--exclude-standard", "-z"]);
           untracked = r.code === 0 ? r.stdout.split("\0").filter(Boolean) : [];
         }
@@ -353,14 +357,14 @@ export class DiffView {
   }
 
   showLines(lines, item) {
-    this.rows = C.attachPaths(G.diffRows(lines, { headers: item.area !== "file" }), item); this.pairs = null; this.heights = null;
+    this.rows = C.attachPaths(G.diffRows(lines, { headers: !isSingleFile(item) }), item); this.pairs = null; this.heights = null;
     this.imageRows = this.rows.filter((r) => r.kind === "img");
     this.added = this.rows.filter((r) => r.kind === "+").length;
     this.removed = this.rows.filter((r) => r.kind === "-").length;
     this.width = Math.max(300, ...this.rows.filter((r) => r.kind !== "img").map((r) => r.text.length * 7 + 20));
   }
 
-  previewKey(item, row) { return `${item.area}:${item.ref ?? item.hash ?? ""}:${row.path}:${row.change}`; }
+  previewKey(item, row) { return `${item.area}:${item.ref ?? item.hash ?? item.base ?? ""}:${row.path}:${row.change}`; }
 
   // Previews already known stay on screen while the next ones load, so a refresh doesn't blink.
   loadImages(item, source, seen, cx) {
@@ -391,7 +395,8 @@ export class DiffView {
   header(t, layout) {
     const add = this.added, del = this.removed;
     const what = this.item.area === "commit" ? `Commit ${this.item.short} · ${this.item.author} · ${this.item.when}`
-      : this.item.area === "stash" ? `Stash ${this.item.ref}` : "Working tree and index against HEAD";
+      : this.item.area === "stash" ? `Stash ${this.item.ref}`
+      : isBase(this.item) ? `Working tree against ${this.item.baseName} (merge base ${this.item.base.slice(0, 7)})` : "Working tree and index against HEAD";
     return v_flex().flex_none().border_b(1).border_color(t.border)
       .child(h_flex().h(38).px(12).gap(8).items_center()
         .child(svg(icon(this.item.area === "commit" ? "commit" : this.item.area === "stash" ? "stash" : "file")).size(14).flex_none().text_color(t.muted))

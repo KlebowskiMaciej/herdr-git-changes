@@ -1,6 +1,6 @@
 // Tests the list's row model, where a click lands in a row, and reading an image's
 // size from its own bytes. Nothing here needs Herdr or git. Run: node tests/rows.test.mjs
-import { buildRows, zoneAt, zoneCenter, filesInside, ACTION, BOX } from "../mods/git-changes/rows.js";
+import { buildRows, buildBranchRows, zoneAt, zoneCenter, filesInside, ACTION, BOX } from "../mods/git-changes/rows.js";
 import { imageSize, fitSize, formatBytes } from "../mods/git-changes/imageinfo.js";
 import { png, gif, jpeg, webpLossless, svgText } from "./fixtures.mjs";
 import assert from "node:assert/strict";
@@ -26,6 +26,15 @@ test("the tree: sections, merged folders, folders before files, stashes last", (
     "section:tracked@", "folder:src@0", "folder:src/ui@1", "file:src/ui/a.ts@2", "file:src/ui/b.ts@2", "file:src/c.ts@1", "file:README.md@0",
     "section:untracked@", "file:n.md@0", "section:stash@", "stash:stash@{0}@",
   ]);
+});
+
+test("the Repo tab: one tree without sections, folded by its own keys, or a flat list", () => {
+  const entries = [file("src/ui/a.ts"), file("src/c.ts"), file("README.md")];
+  const branch = (over) => buildBranchRows({ entries, listMode: "tree", folded: new Set(), ...over }).rows;
+  assert.deepEqual(shape(branch()), ["folder:src@0", "folder:src/ui@1", "file:src/ui/a.ts@2", "file:src/c.ts@1", "file:README.md@0"]);
+  assert.deepEqual(shape(branch({ folded: new Set(["branch:src", "tracked:src"]) })), ["folder:src@0", "file:README.md@0"]);
+  assert.equal(branch({ folded: new Set(["tracked:src"]) }).length, 5, "the Changes tab's folding is its own");
+  assert.deepEqual(shape(branch({ listMode: "flat" })), ["file:src/ui/a.ts@0", "file:src/c.ts@0", "file:README.md@0"]);
 });
 
 test("flat: every file under its section, with its folder", () => {

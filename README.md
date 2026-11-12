@@ -54,6 +54,28 @@ picks its own Changes panel, so you point your layouts at this one
   with hundreds of changed files scrolls and hovers as smoothly as one with
   three. A refresh that finds nothing new redraws nothing.
 
+### Repo tab
+
+Every file your branch changed since it left its base, as a merge request
+shows it: the commits on the branch, plus what's staged, unstaged and
+untracked.
+
+- **The base** is origin's default branch (`origin/HEAD`), else `origin/main`,
+  `origin/master`, `main` or `master`, whichever is there first. Files are
+  compared with the merge base of that branch and HEAD, so work that landed on
+  the base after you branched off doesn't show. On `main` itself, it shows
+  your commits that `origin/main` doesn't have yet, and your uncommitted
+  changes.
+- **Tree or flat**, the same switch as in Changes. Click a folder to fold it;
+  folding is remembered apart from Changes.
+- **Click a file** to see its diff against the merge base in the main area.
+  View Diff shows all of them at once. Right-click a file or a folder to open
+  its folder or copy its path.
+- The toolbar shows the lines added and removed, and how many files changed
+  since which base.
+- No checkboxes and no discard here: stage and discard in Changes.
+- Read only while the tab shows, like History.
+
 ### The diff, in the main area
 
 Clicking a file, a stash, a commit or View Diff opens a tab in the main area,
@@ -267,7 +289,7 @@ herdr-app do tab.new '{"name":"History","mod":"git-changes","props":{"folder":"/
 |---|---|
 | `folder` | Show this repository instead of the focused terminal's. |
 | `on` | With `folder`: the machine it's on (a name from `hc machine ls`). |
-| `tab` | Open on `"changes"` or `"history"`. Without it, the panel opens on the tab you used last. |
+| `tab` | Open on `"changes"`, `"repo"` or `"history"`. Without it, the panel opens on the tab you used last. |
 
 ## Limits
 
@@ -311,7 +333,7 @@ node tests/ui.test.mjs    # the panel and the diff tab, rendered
 
 `git.test.mjs` builds throwaway repositories with a bare "remote". It runs
 every command a button or menu item runs against real git, then checks the
-parsing, the commit modes, the remote button's choice, stashes, uncommit, force
+parsing, the Repo tab's base and files, the commit modes, the remote button's choice, stashes, uncommit, force
 push, checkout and the history graph (lanes, labels, the remote toggle).
 
 `rows.test.mjs` checks the list's rows (tree, flat, folded, staged state), where
@@ -327,6 +349,8 @@ Herdr does. It clicks through:
   the number of files;
 - opening the diff tab and reusing it;
 - one and two columns;
+- Repo: a branch's committed, modified and untracked files, folding, and its
+  diff against the merge base;
 - History;
 - Open folder and Open in terminal;
 - image diffs: modified, added, deleted, in a commit and in a stash;
@@ -351,8 +375,8 @@ Files in `mods/git-changes/`:
 | File | What's in it |
 |---|---|
 | `main.js` | Picks a role from `props.role`: the panel, a menu, or the diff tab (`"diff"`). |
-| `panel.js` | The panel: reading the repository, every action, the Changes tab's virtual list, its menus, and the commit area. |
-| `rows.js` | The Changes list as flat rows, and where a click lands in a row. No Herdr imports. |
+| `panel.js` | The panel: reading the repository, every action, the Changes and Repo tabs' virtual lists, their menus, and the commit area. |
+| `rows.js` | The Changes and Repo lists as flat rows, and where a click lands in a row. No Herdr imports. |
 | `images.js` | Copies an image's bytes into Herdr's folder so it can be shown. |
 | `imageinfo.js` | An image's size from its bytes, scaling it to fit, file sizes. No Herdr imports. |
 | `history.js` | The History tab's graph. |
