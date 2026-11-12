@@ -22,6 +22,7 @@ import * as C from "./comments.js";
 import { icon, menuHeight } from "./menu.js";
 import { previewImage, pruneCache } from "./images.js";
 import { fitSize, formatBytes } from "./imageinfo.js";
+import { highlightRows, syntaxColors, Token } from "./syntax.js";
 
 const MAX = 5000;
 const clip = (line) => (line.length > 4000 ? line.slice(0, 4000) + "… (line truncated)" : line);
@@ -357,7 +358,7 @@ export class DiffView {
   }
 
   showLines(lines, item) {
-    this.rows = C.attachPaths(G.diffRows(lines, { headers: !isSingleFile(item) }), item); this.pairs = null; this.heights = null;
+    this.rows = highlightRows(C.attachPaths(G.diffRows(lines, { headers: !isSingleFile(item) }), item)); this.pairs = null; this.heights = null;
     this.imageRows = this.rows.filter((r) => r.kind === "img");
     this.added = this.rows.filter((r) => r.kind === "+").length;
     this.removed = this.rows.filter((r) => r.kind === "-").length;
@@ -433,7 +434,14 @@ export class DiffView {
       .child(div().w(38).flex_none().text_right().text_color(t.dim).child(kind === "-" ? String(number) : kind === " " ? String(old) : ""))
       .child(div().w(38).flex_none().text_right().text_color(t.dim).child(kind === "+" || kind === " " ? String(number) : ""))
       .child(div().w(10).flex_none().text_color(color).child(kind === "+" || kind === "-" ? kind : ""))
-      .child(div().flex_1().min_w(0).whitespace_nowrap().text_color(kind === " " ? t.foreground : color).child(text));
+      .child(this.code(h_flex().flex_1().min_w(0).whitespace_nowrap(), row, kind === " " ? t.foreground : color, t));
+  }
+
+  code(element, row, plain, t) {
+    if (!row?.tokens) return element.text_color(plain).child(row?.text ?? "");
+    const colors = syntaxColors(t);
+    return element.text_color(t.foreground)
+      .children(row.tokens.map(({ kind, text }) => div().flex_none().when(kind !== Token.Plain, (e) => e.text_color(colors[kind])).child(text)));
   }
 
   // One row of both columns. Both sides move by the same horizontal offset, so they stay lined up.
@@ -448,7 +456,7 @@ export class DiffView {
         .child(this.commentMark(entry, t))
         .child(div().w(38).flex_none().text_right().text_color(t.dim).child(number))
         .child(div().flex_1().min_w(0).overflow_hidden()
-          .child(div().w(this.width).flex_none().ml(-this.offset).whitespace_nowrap().text_color(kind === " " ? t.foreground : color).child(entry?.text ?? "")));
+          .child(this.code(h_flex().w(this.width).flex_none().ml(-this.offset).whitespace_nowrap(), entry, kind === " " ? t.foreground : color, t)));
     };
     return h_flex().w_full().h(ROW).flex_none().child(side(row.left, true)).child(side(row.right, false));
   }

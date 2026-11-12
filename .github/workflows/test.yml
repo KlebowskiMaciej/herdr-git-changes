@@ -9,4 +9,5 @@ jobs:
         with: { node-version: 22 }
       - run: node tests/git.test.mjs
       - run: node tests/rows.test.mjs
+      - run: node tests/syntax.test.mjs
       - run: node tests/ui.test.mjs

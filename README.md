@@ -95,6 +95,10 @@ the next click.
   sides move together.
 - The switch is in the tab's header and in the panel's toolbar; both change
   every diff tab.
+- **Syntax colors** for TypeScript and JavaScript, C# and HTML, from the
+  terminal theme's colors: keywords, types, calls, strings, numbers and
+  comments, or tags, attributes and their values. Changed lines keep their red
+  or green background and sign. Other files keep the plain red and green text.
 - **Images** (PNG, JPEG, GIF, WebP, SVG and BMP) show as pictures, with their
   size and file size. A changed image shows *Before* and *After*: stacked in
   one column, side by side in two columns, so the same switch compares them.
@@ -330,6 +334,7 @@ herdr-app do tab.new '{"name":"History","mod":"git-changes","props":{"folder":"/
 ```sh
 node tests/git.test.mjs   # git logic against real repositories
 node tests/rows.test.mjs  # the list's rows, where a click lands, image sizes
+node tests/syntax.test.mjs # syntax colors: languages and tokens
 node tests/ui.test.mjs    # the panel and the diff tab, rendered
 ```
 
@@ -363,7 +368,7 @@ Herdr does. It clicks through:
   without an answer, Delete thread, worktrees, and the side picked in two
   columns.
 
-None needs Herdr. CI runs all three on every push.
+None needs Herdr. CI runs all of them on every push.
 
 While editing, copy the folder over the installed one and check it:
 
@@ -385,6 +390,7 @@ Files in `mods/git-changes/`:
 | `lanes.js` | Lays commits out on lanes (from herdr-git-graph, unchanged). |
 | `diff.js` | Loading diffs, the one diff tab per space, its one- and two-column views, its image rows and its comment threads. |
 | `comments.js` | Comment threads: pinning a comment to its line, saving them in the git folder, and asking a fork of the Claude Code session. |
+| `syntax.js` | Syntax colors: a file's language from its extension, and each diff line split into colored tokens. No Herdr imports. |
 | `menu.js` | The dropdown and right-click menus, shown as popups. |
 | `git.js` | Parsing git's output, the folder tree, pairing lines for two columns, finding the images in a diff, and the argv behind every action. No Herdr imports, so node can test it. |
 
