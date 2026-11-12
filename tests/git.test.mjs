@@ -353,27 +353,26 @@ test("the base is origin's default branch, else origin/main, else the local main
   assert.equal(baseOf(remote), "origin/develop", "origin/HEAD names the default branch");
 });
 
-test("a branch's files since its base: committed, staged, unstaged and untracked, with their line counts", () => {
+test("a branch's files since its base: only what its commits changed, with their line counts", () => {
   const r = repo("branch-files");
   commit(r, "init", "kept.txt"); write(r, "gone.txt", "g\n"); write(r, "edited.txt", "a\n"); run(r, ["add", "."]); run(r, ["commit", "-qm", "more"]);
   commit(r, "on main later", "main-only.txt");
   run(r, ["switch", "-qc", "feature", "HEAD~1"]);
   mkdirSync(join(r, "src")); commit(r, "feature work", "src/new.txt");
   run(r, ["rm", "-q", "gone.txt"]); run(r, ["commit", "-qm", "drop gone"]);
-  append(r, "edited.txt", "b\nc\n");
+  append(r, "edited.txt", "b\nc\n"); run(r, ["commit", "-qam", "edit"]);
+  append(r, "edited.txt", "uncommitted\n");
   write(r, "staged.txt", "s\n"); run(r, ["add", "staged.txt"]);
   write(r, "loose.txt", "l\n");
-  const base = baseOf(r), mergeBase = run(r, G.mergeBaseArgs(base)).trim();
-  const entries = G.branchEntries(run(r, G.baseNameStatusArgs(mergeBase)), run(r, G.baseNumstatArgs(mergeBase)), status(r).entries.filter((e) => e.untracked));
-  assert.deepEqual(entries.map((e) => [e.path, e.status, e.add, e.del, Boolean(e.untracked)]), [
-    ["edited.txt", "M", 2, 0, false], ["gone.txt", "D", 0, 1, false], ["loose.txt", "A", 0, 0, true],
-    ["src/new.txt", "A", 1, 0, false], ["staged.txt", "A", 1, 0, false],
-  ]);
-  assert.ok(!entries.some((e) => e.path === "main-only.txt"), "main's own later work is not the branch's");
-  const rows = G.diffRows(run(r, G.diffArgs({ area: "base-file", base: mergeBase, path: "edited.txt" }, true)[0]).split("\n"));
+  const base = baseOf(r), mergeBase = run(r, G.mergeBaseArgs(base)).trim(), head = run(r, ["rev-parse", "HEAD"]).trim();
+  const entries = G.branchEntries(run(r, G.baseNameStatusArgs(mergeBase, head)), run(r, G.baseNumstatArgs(mergeBase, head)));
+  assert.deepEqual(entries.map((e) => [e.path, e.status, e.add, e.del]), [
+    ["edited.txt", "M", 2, 0], ["gone.txt", "D", 0, 1], ["src/new.txt", "A", 1, 0],
+  ], "no staged, unstaged or untracked work, and not main's own later work");
+  const rows = G.diffRows(run(r, G.diffArgs({ area: "base-file", base: mergeBase, head, path: "edited.txt" }, true)[0]).split("\n"));
   assert.deepEqual(rows.filter((x) => x.kind === "+").map((x) => x.text), ["b", "c"]);
-  const all = run(r, G.diffArgs({ area: "base", base: mergeBase }, true)[0]);
-  assert.ok(all.includes("b/src/new.txt") && all.includes("b/gone.txt") && !all.includes("main-only"));
+  const all = run(r, G.diffArgs({ area: "base", base: mergeBase, head }, true)[0]);
+  assert.ok(all.includes("b/src/new.txt") && all.includes("b/gone.txt") && !all.includes("main-only") && !all.includes("staged.txt"));
 });
 
 rmSync(base, { recursive: true, force: true });

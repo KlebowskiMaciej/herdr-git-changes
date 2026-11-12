@@ -36,18 +36,16 @@ export function pickBase(text) {
 }
 
 export const mergeBaseArgs = (base) => ["merge-base", "HEAD", base];
-export const baseNameStatusArgs = (mergeBase) => ["diff", mergeBase, "--name-status", "-z", "--no-renames"];
-export const baseNumstatArgs = (mergeBase) => ["diff", mergeBase, ...NUMSTAT];
+export const baseNameStatusArgs = (mergeBase, head) => ["diff", mergeBase, head, "--name-status", "-z", "--no-renames"];
+export const baseNumstatArgs = (mergeBase, head) => ["diff", mergeBase, head, ...NUMSTAT];
 
-/** Every file the branch changed since `mergeBase`, committed or not, untracked ones too, sorted by path. */
-export function branchEntries(nameStatus, numstat, untracked) {
+/** Every file the branch's commits changed, from `baseNameStatusArgs` and `baseNumstatArgs`, sorted by path. */
+export function branchEntries(nameStatus, numstat) {
   const stats = parseNumstat(numstat), tokens = nameStatus.split("\0"), entries = [];
   for (let i = 0; i + 1 < tokens.length; i += 2) {
     const path = tokens[i + 1];
     entries.push({ path, status: letter(tokens[i][0]), add: 0, del: 0, ...(stats[path] ?? {}) });
   }
-  const known = new Set(entries.map((e) => e.path));
-  for (const e of untracked) if (!known.has(e.path)) entries.push({ path: e.path, status: "A", untracked: true, add: 0, del: 0 });
   return entries.sort((a, b) => a.path.localeCompare(b.path));
 }
 
@@ -216,7 +214,7 @@ export function diffArgs(item, hasHead) {
   if (item.area === "stash") return [["stash", "show", "-p", "--include-untracked", ...DIFF, item.ref]];
   if (item.area === "commit") return [["show", "--format=", "-p", "--diff-merges=first-parent", ...DIFF, item.hash]];
   const path = item.area === "all" || item.area === "base" ? [] : ["--", item.path];
-  if (item.area === "base" || item.area === "base-file") return [["diff", item.base, ...DIFF, ...path]];
+  if (item.area === "base" || item.area === "base-file") return [["diff", item.base, item.head, ...DIFF, ...path]];
   return hasHead ? [["diff", "HEAD", ...DIFF, ...path]] : [["diff", "--cached", ...DIFF, ...path], ["diff", ...DIFF, ...path]];
 }
 
@@ -227,7 +225,7 @@ export function imageSides(item, { path, change }, hasHead) {
   let before, after;
   if (item.area === "commit") { before = revs(`${item.hash}^1`); after = revs(item.hash); }
   else if (item.area === "stash") { before = revs(`${item.ref}^1`); after = revs(item.ref, `${item.ref}^3`); }
-  else if (item.base) { before = revs(item.base); after = { worktree: path }; }
+  else if (item.base) { before = revs(item.base); after = revs(item.head); }
   else { before = hasHead ? revs("HEAD") : null; after = { worktree: path }; }
   return { before: change === "added" ? null : before, after: change === "deleted" ? null : after };
 }

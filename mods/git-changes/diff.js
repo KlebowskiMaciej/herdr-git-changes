@@ -53,7 +53,7 @@ async function untrackedLines(root, on, path) {
   return [...lead, ...(await untrackedBody(root, on, path))];
 }
 
-const showsUntracked = (item) => item.area === "all" || item.area === "base";
+const showsUntracked = (item) => item.area === "all";
 const isSingleFile = (item) => item.area === "file" || item.area === "base-file";
 const isBase = (item) => item.area === "base" || item.area === "base-file";
 
@@ -75,7 +75,7 @@ export async function loadDiff(item, { root, on, hasHead, untracked = [] }) {
   return lines.slice(0, MAX).map(clip);
 }
 
-export const itemTitle = (item) => item.area === "all" ? "All changes" : item.area === "base" ? `All changes since ${item.baseName}`
+export const itemTitle = (item) => item.area === "all" ? "All changes" : item.area === "base" ? `All commits since ${item.baseName}`
   : item.area === "stash" ? `${item.ref} · ${item.subject}` : item.area === "commit" ? `${item.short} · ${item.subject}` : item.path;
 export const itemName = (item) => item.area === "all" ? "All changes" : item.area === "base" ? `Since ${item.baseName}`
   : item.area === "stash" ? item.ref : item.area === "commit" ? item.short : item.path.split("/").pop();
@@ -396,7 +396,7 @@ export class DiffView {
     const add = this.added, del = this.removed;
     const what = this.item.area === "commit" ? `Commit ${this.item.short} · ${this.item.author} · ${this.item.when}`
       : this.item.area === "stash" ? `Stash ${this.item.ref}`
-      : isBase(this.item) ? `Working tree against ${this.item.baseName} (merge base ${this.item.base.slice(0, 7)})` : "Working tree and index against HEAD";
+      : isBase(this.item) ? `Commits since ${this.item.baseName} (${this.item.base.slice(0, 7)}..${this.item.head.slice(0, 7)})` : "Working tree and index against HEAD";
     return v_flex().flex_none().border_b(1).border_color(t.border)
       .child(h_flex().h(38).px(12).gap(8).items_center()
         .child(svg(icon(this.item.area === "commit" ? "commit" : this.item.area === "stash" ? "stash" : "file")).size(14).flex_none().text_color(t.muted))

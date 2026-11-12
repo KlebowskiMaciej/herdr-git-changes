@@ -315,7 +315,7 @@ await test("History renders the graph and a commit opens in the diff tab", async
   assert.ok(opened && /^[0-9a-f]{7}$/.test(opened[1].name), "named after the short hash");
 });
 
-await test("Repo lists every file the branch changed since main, committed or not, and opens its diff against the merge base", async () => {
+await test("Repo lists only the files the branch's commits changed since main, and opens their diff against the merge base", async () => {
   const branchRepo = join(base, "branch-repo"), bgit = (...a) => execFileSync("git", a, { cwd: branchRepo, env, encoding: "utf8" });
   mkdirSync(join(branchRepo, "lib"), { recursive: true });
   bgit("init", "-q", "-b", "main");
@@ -331,9 +331,10 @@ await test("Repo lists every file the branch changed since main, committed or no
     await settle();
     let tree = panel.render(cx);
     const all = texts(tree);
-    assert.ok(["lib", "done.ts", "base.txt", "loose.md"].every((name) => all.includes(name)), "committed, modified and untracked files");
-    assert.ok(all.includes("3 since main"), "the count and the base in the toolbar");
-    assert.ok(!byId(tree, "stage-lib/done.ts") && !byId(tree, "discard-base.txt"), "no staging or discard on the branch's files");
+    assert.ok(all.includes("lib") && all.includes("done.ts"), "the committed file");
+    assert.ok(!all.includes("base.txt") && !all.includes("loose.md"), "no uncommitted or untracked files");
+    assert.ok(all.includes("1 since main"), "the count and the base in the toolbar");
+    assert.ok(!byId(tree, "stage-lib/done.ts") && !byId(tree, "discard-lib/done.ts"), "no staging or discard on the branch's files");
     const list = walk(tree).find((n) => n.kind === "list" && n.id === panel.repoListId);
     list.handlers.item_click("folder:branch:lib", cx);
     assert.ok(!texts(panel.render(cx)).includes("done.ts"), "a folder folds");
@@ -347,7 +348,7 @@ await test("Repo lists every file the branch changed since main, committed or no
     H.currentProps = { role: "diff", space: "sp1" };
     view.init(cx); await settle();
     tree = view.render(cx);
-    assert.ok(texts(tree).includes("done") && texts(tree).some((s) => s.startsWith("Working tree against main")), "the file's diff against the merge base");
+    assert.ok(texts(tree).includes("done") && texts(tree).some((s) => s.startsWith("Commits since main")), "the file's diff against the merge base");
     H.currentProps = { folder: branchRepo };
     click(panel.render(cx), "view-diff-base");
     assert.equal(H.shared["git-changes.view"].sp1.item.area, "base");

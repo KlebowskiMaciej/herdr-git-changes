@@ -47,20 +47,20 @@ const isTimeout = (e) => /time/i.test(String(e?.message ?? e));
 const sumOf = (entries, field) => entries.reduce((n, e) => n + e[field], 0);
 const failedRead = (error, base = null) => ({ base, error, entries: [], signature: error });
 
-/** What the Repo tab lists: every file changed since the branch left its base, or why there's nothing to compare. */
+/** What the Repo tab lists: every file the branch's commits changed since it left its base, or why there's nothing to compare. */
 async function readBranchFiles(git, status) {
-  if (!status.branch.oid) return failedRead("No commits yet");
+  const head = status.branch.oid;
+  if (!head) return failedRead("No commits yet");
   const refs = await git(G.BASE_REFS), base = refs.code === 0 ? G.pickBase(refs.stdout) : null;
   if (!base) return failedRead("No main or master branch to compare with");
   const found = await git(G.mergeBaseArgs(base));
   if (found.code !== 0) return failedRead(`No commit in common with ${base}`, base);
   const mergeBase = found.stdout.trim();
-  const [names, stats] = await Promise.all([git(G.baseNameStatusArgs(mergeBase)), git(G.baseNumstatArgs(mergeBase))]);
+  const [names, stats] = await Promise.all([git(G.baseNameStatusArgs(mergeBase, head)), git(G.baseNumstatArgs(mergeBase, head))]);
   if (names.code !== 0) throw new Error(G.gitError(names));
-  const untracked = status.entries.filter((e) => e.untracked), numstat = stats.code === 0 ? stats.stdout : "";
-  const entries = G.branchEntries(names.stdout, numstat, untracked);
-  return { base, mergeBase, entries: entries.slice(0, G.LIMIT), limited: entries.length > G.LIMIT,
-    signature: [base, mergeBase, names.stdout, numstat, untracked.map((e) => e.path).join("\0")].join("\x1f") };
+  const numstat = stats.code === 0 ? stats.stdout : "", entries = G.branchEntries(names.stdout, numstat);
+  return { base, mergeBase, head, entries: entries.slice(0, G.LIMIT), limited: entries.length > G.LIMIT,
+    signature: [base, mergeBase, head, names.stdout, numstat].join("\x1f") };
 }
 
 export class Panel {
@@ -190,7 +190,7 @@ export class Panel {
   }
 
   pickBranch(fields, cx) {
-    this.pick({ ...fields, base: this.repo.mergeBase, baseName: this.repo.base }, cx);
+    this.pick({ ...fields, base: this.repo.mergeBase, head: this.repo.head, baseName: this.repo.base }, cx);
   }
 
   // Show it in the main area: one diff tab per space, reused and renamed.
@@ -694,7 +694,7 @@ export class Panel {
     const view = v_flex().id("git-changes-repo").flex_1().min_h(0), notice = (text) => view.child(div().p(12).text_color(t.dim).child(text));
     if (!this.repo) return notice("Loading the branch's changes…");
     if (this.repo.error) return notice(this.repo.error);
-    if (!this.repo.entries.length) return notice(`No changes since ${this.repo.base}`);
+    if (!this.repo.entries.length) return notice(`No commits since ${this.repo.base}`);
     return view.child(this.repoList(t, shown?.area === "base-file" ? `file:${shown.path}` : null));
   }
 
