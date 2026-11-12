@@ -15,10 +15,11 @@
 // replacements pair by position inside one block, never across a hunk or a
 // context line. That code isn't used here; git.js has its own splitRows().
 import { div, svg, image } from "gpui-kit";
-import { v_flex, h_flex, Scrollbar, v_virtual_list } from "gpui-base";
-import { exec, readTextFile, watchFolder, theme, settings, props, shared, setShared, spaces, panes, run } from "herdr";
+import { v_flex, h_flex, Scrollbar, v_virtual_list, TextareaState, Textarea } from "gpui-base";
+import { exec, readTextFile, watchFolder, theme, settings, props, shared, setShared, spaces, panes, run, notify, openOverlay, window as appWindow } from "herdr";
 import * as G from "./git.js";
-import { icon } from "./menu.js";
+import * as C from "./comments.js";
+import { icon, menuHeight } from "./menu.js";
 import { previewImage, pruneCache } from "./images.js";
 import { fitSize, formatBytes } from "./imageinfo.js";
 
@@ -26,6 +27,11 @@ const MAX = 5000;
 const clip = (line) => (line.length > 4000 ? line.slice(0, 4000) + "… (line truncated)" : line);
 const ROW = 20, HEAD = 24;
 const MAX_IMAGES = 20, CAPTION = 22, CELL_PAD = 10, STATE_HEIGHT = 64, MANY_IMAGES_HEIGHT = 320, SPLIT_COLUMNS = 2;
+const THREAD_INDENT = 54, THREAD_MARGIN = 16, MIN_CARD = 240, CHAR_WIDTH = 7.25, LINE = 18;
+const CARD_PAD = 10, CARD_PAD_Y = 6, CARD_BORDER = 1, ROW_PAD_Y = 4, BLOCK_GAP = 4, COMPOSE_INPUT = 60;
+const CARD_FRAME = 2 * (ROW_PAD_Y + CARD_PAD_Y + CARD_BORDER);
+const COMPOSE_HEIGHT = CARD_FRAME + COMPOSE_INPUT + BLOCK_GAP + LINE;
+const MENU_WIDTH = 200;
 const mono = () => settings().font_family ?? "JetBrains Mono";
 
 const diffHeader = (path) => `diff --git a/${path} b/${path}`;
@@ -97,6 +103,12 @@ export class DiffView {
     this.listId = `gc-diff-${Math.random().toString(36).slice(2)}`;
     this.width = 300; this.offset = 0; this.bodyWidth = 0; this.bodyHeight = 0; this.imageVersion = 0;
     this.previews = new Map();
+    this.uid = `gcd-${Math.random().toString(36).slice(2)}`;
+    this.comments = []; this.commentsFile = null; this.saving = Promise.resolve(null);
+    this.asking = new Set(); this.failures = new Map(); this.target = null; this.threadVersion = 0; this.display = null;
+    this.menuActions = {}; this.menuSerial = 0; this.pickSeen = shared("git-changes.pick")?.at; this.pressSide = "right";
+    this.composer = TextareaState.new({ placeholder: "Comment on this line", rows: 3 });
+    this.composer.on("submit", (e, cx) => { if (e.secondary) this.send(cx); });
     this.clearRows();
     cx.spawn(async () => pruneCache());
     this.sync(cx);
@@ -131,10 +143,148 @@ export class DiffView {
     this.seen = id;
     if (!e) { this.item = null; this.clearRows(); return; }
     if (!e.tab) cx.spawn(async () => this.claim());
+    const repository = `${e.source.on ?? ""}:${e.source.root}`;
     this.item = e.item; this.root = e.source.root; this.on = e.source.on ?? null;
-    this.clearRows(); this.offset = 0; this.error = null;
+    this.clearRows(); this.offset = 0; this.error = null; this.target = null; this.changed();
     if (this.root !== this.watched && !this.on) this.watch(this.root, cx);
+    if (repository !== this.repository) this.loadThreads(repository, cx);
     this.reload(cx);
+  }
+
+  // --- comment threads --------------------------------------------------------
+
+  changed() { this.threadVersion++; }
+
+  commentById(id) { return this.comments.find((c) => c.id === id) ?? null; }
+
+  loadThreads(repository, cx) {
+    const root = this.root, on = this.on;
+    this.repository = repository; this.comments = []; this.commentsFile = null; this.failures.clear();
+    cx.spawn(async (cx) => {
+      const file = on ? null : await C.commentsFile(root, on).catch(() => null);
+      const comments = await C.loadComments(file, on);
+      if (repository !== this.repository) return;
+      this.commentsFile = file; this.comments = comments; this.changed(); cx.notify();
+    });
+  }
+
+  /** Applies `change` to the comments now, then to the file; saves run one after another, and the last one's result is kept. */
+  save(change, cx, file = this.commentsFile) {
+    this.comments = change(this.comments); this.changed();
+    if (!file) return;
+    const saving = this.saving = this.saving.then(() => C.updateComments(file, change)).catch((e) => {
+      notify({ title: "Comment not saved", body: String(e?.message ?? e), level: "error" });
+      return null;
+    });
+    cx.spawn(async (cx) => {
+      const list = await saving;
+      if (list && saving === this.saving && file === this.commentsFile) { this.comments = list; this.changed(); cx.notify(); }
+    });
+  }
+
+  openComposer(target) {
+    const key = (t) => (t?.id ? `t${t.id}` : t?.anchor ? JSON.stringify(t.anchor) : null);
+    this.target = key(target) === key(this.target) ? null : target;
+    this.changed();
+    if (!this.target) return;
+    this.composer.set_value("");
+    this.composer.focus();
+  }
+
+  closeComposer() { this.target = null; this.changed(); }
+
+  send(cx) {
+    const text = this.composer.value().trim(), target = this.target;
+    if (!text || !target) return;
+    const message = { from: "you", text, at: Date.now() };
+    const existing = target.id ? this.commentById(target.id) : null;
+    if (target.id && (!existing || this.asking.has(target.id))) return;
+    const comment = existing ?? this.newComment(target.anchor, message);
+    this.save(existing ? C.withMessage(existing.id, message) : C.withComment(comment), cx);
+    this.composer.set_value(""); this.closeComposer();
+    this.ask(comment.id, cx);
+    cx.notify();
+  }
+
+  newComment(anchor, message) {
+    const row = this.rows.find((r) => C.isAnchor(r, anchor));
+    const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    return { id, ...anchor, context: row ? C.contextOf(this.rows, row) : `${anchor.kind}${anchor.text}`, session: null, cwd: null, at: message.at, thread: [message] };
+  }
+
+  ask(id, cx) {
+    const comment = this.commentById(id);
+    if (!comment || this.asking.has(id)) return;
+    const source = { root: this.root, on: this.on, taken: new Set(this.comments.map((c) => c.session).filter(Boolean)) };
+    const file = this.commentsFile;
+    this.asking.add(id); this.failures.delete(id); this.changed();
+    cx.spawn(async (cx) => {
+      try {
+        const answer = await C.askClaude(comment, source);
+        this.save(C.withMessage(id, { from: "claude", text: answer.text, at: Date.now() }, { session: answer.session, cwd: answer.cwd }), cx, file);
+      } catch (e) { this.failures.set(id, String(e?.message ?? e)); }
+      finally { this.asking.delete(id); this.changed(); cx.notify(); }
+    });
+  }
+
+  deleteThread(id, cx) {
+    const comment = this.commentById(id), on = this.on;
+    if (!comment) return;
+    if (this.target?.id === id) this.closeComposer();
+    this.failures.delete(id);
+    this.save(C.withoutComment(id), cx);
+    cx.spawn(async () => C.removeSession(comment, on));
+  }
+
+  clickRow(key, cx) {
+    if (key.startsWith("t")) this.openComposer({ id: key.slice(1) });
+    else if (key.startsWith("r")) {
+      const row = this.lineAt(Number(key.slice(1)));
+      if (!row) return;
+      const threads = this.display?.placed.get(row);
+      this.openComposer(threads ? { id: threads.at(-1).id } : { anchor: C.anchorOf(row) });
+    } else return;
+    cx.notify();
+  }
+
+  lineAt(index) {
+    const base = getLayout() === "split" ? this.pairs : this.rows;
+    const lines = base?.[index] ? C.linesOf(base[index]) : [];
+    return lines.length > 1 && this.pressSide === "right" ? lines[1] : lines[0] ?? null;
+  }
+
+  threadMenu(key, cx) {
+    const comment = key.startsWith("t") ? this.commentById(key.slice(1)) : null;
+    if (!comment) return;
+    const answer = C.lastAnswer(comment), canAsk = C.awaitsAnswer(comment) && !this.asking.has(comment.id);
+    this.menu([
+      { label: "Reply", icon: "plus", run: () => this.openComposer({ id: comment.id }) },
+      canAsk ? { label: "Ask again", icon: "refresh", run: (cx) => this.ask(comment.id, cx) } : null,
+      answer ? { label: "Copy answer", icon: "copy", copy: answer } : null,
+      { separator: true },
+      { label: "Delete thread", icon: "trash", danger: true, run: (cx) => this.deleteThread(comment.id, cx) },
+    ]);
+    cx.notify();
+  }
+
+  menu(items) {
+    const actions = this.menuActions = {}, serial = ++this.menuSerial;
+    const out = items.filter(Boolean).map((it, i) => {
+      if (!it.run) return it;
+      const { run: action, ...rest } = it, id = `m${serial}-${i}`;
+      actions[id] = action;
+      return { ...rest, id };
+    });
+    openOverlay({ mod: "git-changes", kind: "popup", at: "pointer", width: MENU_WIDTH, height: menuHeight(out), props: { role: "menu", owner: this.uid, items: out } });
+  }
+
+  takePick(cx) {
+    const pick = shared("git-changes.pick");
+    if (!pick || pick.owner !== this.uid || pick.at === this.pickSeen) return;
+    this.pickSeen = pick.at;
+    const action = this.menuActions[pick.id];
+    this.menuActions = {};
+    if (action) cx.spawn(async (cx) => { action(cx); cx.notify(); });
   }
 
   watch(root, cx) {
@@ -176,7 +326,7 @@ export class DiffView {
   }
 
   showLines(lines, item) {
-    this.rows = G.diffRows(lines, { headers: item.area !== "file" }); this.pairs = null; this.heights = null;
+    this.rows = C.attachPaths(G.diffRows(lines, { headers: item.area !== "file" }), item); this.pairs = null; this.heights = null;
     this.imageRows = this.rows.filter((r) => r.kind === "img");
     this.added = this.rows.filter((r) => r.kind === "+").length;
     this.removed = this.rows.filter((r) => r.kind === "-").length;
@@ -325,41 +475,113 @@ export class DiffView {
       .children(cells.map((cell, i) => this.imageCellView(cell, row, t, layout).when(layout === "split" && i > 0, (e) => e.border_l(1).border_color(t.border))));
   }
 
+  cardWidth() { return Math.max(MIN_CARD, (this.bodyWidth || 600) - THREAD_INDENT - THREAD_MARGIN); }
+
+  cardColumns() { return Math.floor((this.cardWidth() - 2 * (CARD_PAD + CARD_BORDER)) / CHAR_WIDTH); }
+
+  blocksOf({ comment, orphan }) {
+    return C.threadBlocks(comment, { asking: this.asking.has(comment.id), failure: this.failures.get(comment.id), orphan });
+  }
+
+  threadHeight(entry) {
+    const blocks = this.blocksOf(entry), columns = this.cardColumns();
+    return CARD_FRAME + blocks.reduce((sum, b) => sum + C.blockLines(b, columns) * LINE, 0) + BLOCK_GAP * (blocks.length - 1);
+  }
+
+  cardRow(height, card) {
+    return div().w_full().h(height).flex_none().py(ROW_PAD_Y).pl(THREAD_INDENT).font_family(mono()).text_size(12)
+      .child(card.w(this.cardWidth()).h_full().px(CARD_PAD).py(CARD_PAD_Y).gap(BLOCK_GAP).rounded(6).border_1());
+  }
+
+  threadRow(entry, t) {
+    const columns = this.cardColumns();
+    const tones = { you: t.foreground, claude: t.foreground, dim: t.dim, error: t.ansi1 };
+    const blocks = this.blocksOf(entry).map((b) => v_flex().flex_none().h(C.blockLines(b, columns) * LINE).overflow_hidden()
+      .when(Boolean(b.label), (e) => e.child(div().h(LINE).flex_none().text_size(11).font_semibold().text_color(b.tone === "claude" ? t.accent : t.muted).child(b.label)))
+      .child(div().line_height(LINE).text_color(tones[b.tone]).when(Boolean(b.single), (e) => e.truncate()).child(b.text)));
+    return this.cardRow(this.threadHeight(entry), v_flex().border_color(t.border).bg(t.raised).children(blocks));
+  }
+
+  composeRow(t) {
+    const send = appWindow().platform === "macos" ? "⌘↩" : "Ctrl+↩";
+    return this.cardRow(COMPOSE_HEIGHT, v_flex().border_color(t.accent).bg(t.background)
+      .child(Textarea.new(this.composer).w_full().h(COMPOSE_INPUT).text_size(12).text_color(t.foreground).font_family(mono()))
+      .child(div().h(LINE).flex_none().truncate().text_size(11).text_color(t.dim).child(`${send} ask a copy of your Claude Code session · Esc cancel`)));
+  }
+
   rowView(row, t, layout) {
+    if (row.kind === "thread") return this.threadRow(row, t);
+    if (row.kind === "compose") return this.composeRow(t);
     if (row.kind === "img") return this.imageRow(row, t, layout);
     return layout === "split" ? this.splitRow(row, t) : this.unifiedRow(row, t);
   }
 
+  rowHeight(row, layout) {
+    if (row.kind === "thread") return this.threadHeight(row);
+    if (row.kind === "compose") return COMPOSE_HEIGHT;
+    if (row.kind === "img") return this.imageHeight(row, layout);
+    return row.kind === "f" ? HEAD : ROW;
+  }
+
   heightsFor(rows, layout) {
     if (this.heights?.rows === rows && this.heights.version === this.imageVersion) return this.heights.list;
-    const list = rows.map((r) => (r.kind === "f" ? HEAD : r.kind === "img" ? this.imageHeight(r, layout) : ROW));
+    const list = rows.map((r) => this.rowHeight(r, layout));
     this.heights = { rows, list, version: this.imageVersion };
     return list;
+  }
+
+  /** The shown rows with each line's threads under it, the composer where it's open, and threads whose line is gone at the end. */
+  displayRows(base) {
+    if (this.display?.base === base && this.display.version === this.threadVersion) return this.display;
+    const { placed, orphans } = C.placeComments(this.rows.filter(C.isLine), this.comments);
+    const target = this.target, rows = [], keys = [];
+    const add = (row, key) => { rows.push(row); keys.push(key); };
+    const addThread = (comment, orphan) => {
+      add({ kind: "thread", comment, orphan }, `t${comment.id}`);
+      if (target?.id === comment.id) add({ kind: "compose" }, "compose");
+    };
+    base.forEach((row, i) => {
+      add(row, `r${i}`);
+      const lines = C.linesOf(row);
+      for (const line of lines) for (const comment of placed.get(line) ?? []) addThread(comment, false);
+      if (target?.anchor && lines.some((line) => C.isAnchor(line, target.anchor))) add({ kind: "compose" }, "compose");
+    });
+    for (const comment of orphans) addThread(comment, true);
+    this.display = { base, version: this.threadVersion, rows, keys, placed };
+    return this.display;
   }
 
   measured(size, cx) {
     const zoom = settings().zoom ?? 1, width = Math.round(size.width / zoom), height = Math.round(size.height / zoom);
     if (width === this.bodyWidth && height === this.bodyHeight) return;
     this.bodyWidth = width; this.bodyHeight = height; this.imageVersion++;
-    if (this.imageRows.length) cx.notify();
+    if (this.imageRows.length || this.comments.length || this.target) cx.notify();
   }
 
   render(cx) {
     this.sync(cx);
+    this.takePick(cx);
     const t = theme(), layout = getLayout();
-    const root = v_flex().id("git-changes-diff").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(12.5);
+    const root = v_flex().id("git-changes-diff").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(12.5)
+      .on_key_down((e, cx) => {
+        if (e.key !== "escape" || !this.target) return;
+        this.closeComposer(); cx.stop_propagation(); cx.notify();
+      });
     if (!this.item) return root.child(div().p(16).text_color(t.dim).child("Pick a file in Changes to see its diff here."));
     if (layout === "split" && !this.pairs) this.pairs = G.splitRows(this.rows);
-    const rows = layout === "split" ? this.pairs : this.rows;
+    const { rows, keys } = this.displayRows(layout === "split" ? this.pairs : this.rows);
     const heights = this.heightsFor(rows, layout);
-    const list = v_virtual_list(`${this.listId}-${layout}`, rows.length, heights, (i) => String(i),
-      (range) => rows.slice(range.start, range.end).map((row) => this.rowView(row, t, layout))).size_full();
+    const list = v_virtual_list(`${this.listId}-${layout}`, rows.length, heights, (i) => keys[i],
+      (range) => rows.slice(range.start, range.end).map((row) => this.rowView(row, t, layout))).size_full()
+      .on_item_click((key, cx) => this.clickRow(key, cx))
+      .on_item_secondary_click((key, _e, cx) => this.threadMenu(key, cx));
     const body = div().id(`${this.listId}-body`).flex_1().min_h(0).relative().font_family(mono()).text_size(12)
       .on_size_change((size, cx) => this.measured(size, cx))
       .when(layout === "unified", (e) => e.child(div().id(`${this.listId}-x`).size_full().overflow_x_scrollbar()
         .child(div().w_full().min_w(this.width + 110).h_full().child(list))))
       // Split: one list for both columns keeps them level; sideways scrolling moves both texts.
       .when(layout === "split", (e) => e.child(div().id(`${this.listId}-split`).size_full()
+        .on_mouse_down("left", (ev) => { this.pressSide = ev.local_position && ev.bounds && ev.local_position.x < ev.bounds.width / 2 ? "left" : "right"; })
         .on_scroll_wheel((ev, cx) => {
           const dx = ev.delta.x || (ev.modifiers?.shift ? ev.delta.y : 0);
           if (!dx) return;

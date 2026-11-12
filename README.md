@@ -81,6 +81,27 @@ the next click.
 - The tab follows the files: saving a shown file refreshes it.
 - The row the tab shows is highlighted in the panel.
 
+### Comments on a line, answered by Claude Code
+
+- **Click a line** of the diff to write a comment under it. Send it with
+  ⌘↩ (Ctrl+↩ on Linux and Windows). Esc closes the box. In two columns, click
+  the side you mean.
+- **A copy of your Claude Code session answers** in one or two sentences, right
+  under your comment. The copy is a fork of the newest Claude Code session
+  started in the repository (or in a folder of it where a Claude Code terminal
+  runs). It knows what that session knows, and the session itself does not
+  change. The copy can only read files (`Read`, `Grep`, `Glob`).
+- **Click a thread** to reply. A reply goes to the same copy, so the thread
+  keeps its own conversation.
+- **Right-click a thread** to reply, ask again after a failed answer, copy the
+  answer, or delete the thread. Deleting also deletes the copy's session, so it
+  doesn't stay in `claude --resume`.
+- **Local only.** Comments are saved in the repository's git folder
+  (`.git/git-changes-comments.json`), never in the worktree, GitHub or GitLab.
+  A comment follows its line by the line's text, so it stays in place when
+  lines above it change. When its line is gone from the diff, the thread moves
+  to the end of the diff and quotes the line.
+
 ### Commit area
 
 - **The branch row** shows `repo / branch ⌄`. Click it to switch to another
@@ -149,6 +170,12 @@ the repository it does three things:
   it holds more than 300 files. It works on this computer only.
 - *Open folder* starts `xdg-open`, `open` or `explorer` on the folder.
 - *Open in terminal* runs Herdr's `tab.new` for the folder.
+- A comment on a line runs `claude -p` with the comment as an argument. To find
+  the session to fork, it runs a fixed `sh -c` script that lists the newest
+  `*.jsonl` files in Claude Code's `projects` folder
+  (`$CLAUDE_CONFIG_DIR`, else `~/.claude`). Deleting a thread runs `rm` on that
+  thread's own session files there, and on nothing else. The answers cost
+  tokens on your Claude account, like any other `claude -p` call.
 
 ## Install
 
@@ -247,6 +274,11 @@ herdr-app do tab.new '{"name":"History","mod":"git-changes","props":{"folder":"/
   no word-level highlighting.
 - The diff tab belongs to its space. If you drag it into another space, the
   next click there opens a new one.
+- Comments need `claude` and `sh` on the repository's machine. On another
+  machine, they work, but they are not saved: they last until the diff tab
+  closes. When two Claude Code sessions run in the same folder, the newest one
+  is forked. A comment's thread height is estimated from its text, so a very
+  long answer can be cut at the bottom of its card.
 - No branch creation, merge, rebase, cherry-pick or tags from the panel; use
   [herdr-git-graph](https://github.com/rabeeh-ta/herdr-git-graph) for those.
 - `herdr-app check` renders the panel once, before any git output arrives, so
@@ -281,7 +313,11 @@ Herdr does. It clicks through:
 - one and two columns;
 - History;
 - Open folder and Open in terminal;
-- image diffs: modified, added, deleted, in a commit and in a stash.
+- image diffs: modified, added, deleted, in a commit and in a stash;
+- comment threads, with a stand-in `claude`: the fork of the newest session,
+  replies on the same copy, a second thread that skips the first copy, a thread
+  that follows its line, Ask again, Delete thread, and the side picked in two
+  columns.
 
 None needs Herdr. CI runs all three on every push.
 
@@ -303,7 +339,8 @@ Files in `mods/git-changes/`:
 | `imageinfo.js` | An image's size from its bytes, scaling it to fit, file sizes. No Herdr imports. |
 | `history.js` | The History tab's graph. |
 | `lanes.js` | Lays commits out on lanes (from herdr-git-graph, unchanged). |
-| `diff.js` | Loading diffs, the one diff tab per space, its one- and two-column views and its image rows. |
+| `diff.js` | Loading diffs, the one diff tab per space, its one- and two-column views, its image rows and its comment threads. |
+| `comments.js` | Comment threads: pinning a comment to its line, saving them in the git folder, and asking a fork of the Claude Code session. |
 | `menu.js` | The dropdown and right-click menus, shown as popups. |
 | `git.js` | Parsing git's output, the folder tree, pairing lines for two columns, finding the images in a diff, and the argv behind every action. No Herdr imports, so node can test it. |
 

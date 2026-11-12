@@ -3,7 +3,7 @@
 // including virtual-list rows, which `herdr-app check` never draws.
 // Run: node tests/ui.test.mjs
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync, rmSync, realpathSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync, rmSync, realpathSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -65,7 +65,7 @@ export function v_virtual_list(id, count, sizes, key, render) {
   return e;
 }
 export const Scrollbar = { vertical: () => el("bar") };
-const state = () => ({ v: "", value() { return this.v; }, set_value(v) { this.v = v; }, on() {}, focus() {}, set_auto_grow() {}, set_selected_range() {} });
+const state = () => ({ v: "", handlers: {}, value() { return this.v; }, set_value(v) { this.v = v; }, on(event, fn) { this.handlers[event] = fn; }, focus() { this.focused = true; }, set_auto_grow() {}, set_selected_range() {} });
 export const InputState = { new: state }, TextareaState = { new: state };
 export const Input = { new: () => el("input") }, Textarea = { new: () => el("textarea") };
 export const spaces = () => { H.hostCalls++; return H.spaces; }, panes = () => H.panes, focused = () => H.focused, layout = () => ({});
@@ -82,20 +82,35 @@ export const openOverlay = (spec) => { H.overlays.push(spec); return "o1"; };
 export const closeOverlay = () => null;
 export const exec = (cmd, args, opts) => H.exec(cmd, args, opts);
 export const readTextFile = (p) => H.read(p);
+export const writeTextFile = (p, text, expected) => H.write(p, text, expected);
 export const watchFolder = () => new Promise(() => {});
 export const nextCommand = () => new Promise(() => {});
 `);
 
 globalThis.localStorage = { m: {}, getItem(k) { return this.m[k] ?? null; }, setItem(k, v) { this.m[k] = String(v); } };
-const env = { ...process.env, GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@t", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+const claudeHome = join(base, "claude-home");
+const env = { ...process.env, GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@t", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", CLAUDE_CONFIG_DIR: claudeHome };
 const tasks = [];
 const OPENERS = ["xdg-open", "open", "explorer"];
 const H = globalThis.__herdr = {
   spaces: [], panes: [], focused: null, shared: {}, runs: [], notes: [], overlays: [], currentProps: {},
   calls: 0, hostCalls: 0, rendering: false, visibleRows: Infinity, platform: "linux", appHome: join(base, "app-home"), execs: [],
   props: () => H.currentProps,
-  exec: async (cmd, args, { cwd }) => { H.execs.push([cmd, args]); if (OPENERS.includes(cmd)) return { code: 0, stdout: "", stderr: "" }; const r = spawnSync(cmd, args, { cwd, env, encoding: "utf8" }); return { code: r.status, stdout: r.stdout, stderr: r.stderr }; },
+  exec: async (cmd, args, { cwd } = {}) => {
+    H.execs.push([cmd, args]);
+    if (OPENERS.includes(cmd)) return { code: 0, stdout: "", stderr: "" };
+    if (cmd === "claude") return H.claude(args, cwd);
+    const r = spawnSync(cmd, args, { cwd, env, encoding: "utf8" });
+    return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+  },
+  claude: () => ({ code: 1, stdout: "", stderr: "no claude here" }),
   read: async (p) => { try { return readFileSync(p, "utf8"); } catch { return null; } },
+  write: async (p, text, expected) => {
+    const now = await H.read(p);
+    if (now !== expected) throw new Error("stale snapshot");
+    writeFileSync(p, text);
+    return null;
+  },
   cx: () => cx,
 };
 const timers = [];
@@ -639,6 +654,146 @@ await test("an image too large to preview says so instead of loading", async () 
   assert.match(result.error, /Too large to preview \(11\.0 MB\)/);
   assert.equal((await previewSide({ worktree: "huge.png" }, "png", { root: picRepo, on: "machine-a" })).error, "Image preview works on this computer only");
   assert.equal(await previewSide(null, "png", { root: picRepo, on: null }), null);
+});
+
+// --- comment threads ------------------------------------------------------------
+
+const talkRepo = join(base, "talk");
+const talkGit = (...a) => execFileSync("git", a, { cwd: talkRepo, env, encoding: "utf8" });
+mkdirSync(talkRepo);
+talkGit("init", "-q", "-b", "main");
+writeFileSync(join(talkRepo, "notes.ts"), "one\ntwo\nthree\n");
+talkGit("add", "."); talkGit("commit", "-qm", "notes");
+writeFileSync(join(talkRepo, "notes.ts"), "one\nTWO\nthree\n");
+
+const MAIN_SESSION = "11111111-1111-4111-8111-111111111111", FIRST_COPY = "22222222-2222-4222-8222-222222222222", SECOND_COPY = "33333333-3333-4333-8333-333333333333";
+const sessions = join(claudeHome, "projects", talkRepo.replace(/[^A-Za-z0-9]/g, "-"));
+const addSession = (id, age) => {
+  mkdirSync(sessions, { recursive: true });
+  writeFileSync(join(sessions, `${id}.jsonl`), "{}\n");
+  const at = new Date(Date.now() - age * 1000);
+  utimesSync(join(sessions, `${id}.jsonl`), at, at);
+};
+addSession(MAIN_SESSION, 60);
+
+const answers = [];
+const answer = (session, result) => answers.push({ code: 0, stdout: JSON.stringify({ type: "result", is_error: false, result, session_id: session }), stderr: "" });
+const asked = [];
+H.claude = (args, cwd) => { asked.push({ args, cwd }); return answers.shift() ?? { code: 1, stdout: "", stderr: "Claude Code is not signed in" }; };
+
+const openTalk = async () => {
+  const saved = H.currentProps;
+  H.shared["git-changes.view"] = { sp1: { item: { area: "file", path: "notes.ts", status: "M", staged: "none" }, source: { root: talkRepo, on: null }, at: Date.now(), tab: "tb9" } };
+  H.currentProps = { role: "diff", space: "sp1" };
+  const view = new DiffView(); view.init(cx); await settle();
+  H.currentProps = saved;
+  view.bodyWidth = 800;
+  return view;
+};
+const diffList = (tree) => walk(tree).find((n) => n.kind === "list");
+const lineKey = (view, text) => `r${view.rows.findIndex((r) => r.text === text)}`;
+const threadKeys = (view) => diffList(view.render(cx)).keys.filter((k) => k.startsWith("t"));
+const comment = async (view, key, text) => {
+  diffList(view.render(cx)).handlers.item_click(key, cx);
+  assert.ok(diffList(view.render(cx)).keys.includes("compose"), "the comment box opened under the line");
+  view.composer.set_value(text);
+  view.composer.handlers.submit({ secondary: true }, cx);
+  await settle();
+};
+const savedComments = () => JSON.parse(readFileSync(join(talkRepo, ".git/git-changes-comments.json"), "utf8")).comments;
+
+let talk;
+await test("a comment on a line asks a copy of the newest Claude Code session and shows the answer under the line", async () => {
+  talk = await openTalk();
+  answer(FIRST_COPY, "Because TWO reads as a constant.");
+  await comment(talk, lineKey(talk, "TWO"), "Why uppercase?");
+  const [{ args, cwd }] = asked;
+  assert.equal(cwd, talkRepo);
+  assert.deepEqual(args.slice(0, 4), ["-p", "--resume", MAIN_SESSION, "--fork-session"]);
+  assert.ok(args.includes("--append-system-prompt") && args.includes("Read,Grep,Glob"), "short answers, read-only tools");
+  const prompt = args.at(-1);
+  assert.equal(args.at(-2), "--");
+  assert.ok(prompt.includes("notes.ts, line 2 (added): TWO") && prompt.includes("+TWO") && prompt.includes("My comment: Why uppercase?"), prompt);
+  const tree = talk.render(cx), list = diffList(tree), all = texts(tree);
+  assert.ok(all.includes("Why uppercase?") && all.includes("Because TWO reads as a constant."), "question and answer shown");
+  assert.equal(list.keys[list.keys.indexOf(lineKey(talk, "TWO")) + 1], threadKeys(talk)[0], "the thread sits right under its line");
+  assert.ok(!list.keys.includes("compose"), "the box closed after sending");
+  const [saved] = savedComments();
+  assert.equal(saved.session, FIRST_COPY);
+  assert.deepEqual(saved.thread.map((m) => m.from), ["you", "claude"]);
+});
+
+await test("a reply in a thread resumes its copy without forking again", async () => {
+  answer(FIRST_COPY, "Yes, rename it.");
+  await comment(talk, threadKeys(talk)[0], "Should I rename it?");
+  const { args } = asked.at(-1);
+  assert.deepEqual(args.slice(0, 3), ["-p", "--resume", FIRST_COPY]);
+  assert.ok(!args.includes("--fork-session"));
+  assert.equal(args.at(-1), "Should I rename it?");
+  assert.ok(texts(talk.render(cx)).includes("Yes, rename it."));
+});
+
+await test("a new thread forks the person's session, not a copy an earlier thread made", async () => {
+  addSession(FIRST_COPY, 1);
+  answer(SECOND_COPY, "It closes the list.");
+  await comment(talk, lineKey(talk, "three"), "What is this for?");
+  assert.equal(asked.at(-1).args[2], MAIN_SESSION);
+  assert.equal(threadKeys(talk).length, 2);
+});
+
+await test("threads are kept in the git folder and follow their line when lines above it change", async () => {
+  writeFileSync(join(talkRepo, "notes.ts"), "zero\none\nTWO\nthree\n");
+  const view = await openTalk(), list = diffList(view.render(cx));
+  const under = (text) => list.keys[list.keys.indexOf(lineKey(view, text)) + 1];
+  assert.ok(under("TWO").startsWith("t") && under("three").startsWith("t"), list.keys.join(" "));
+  assert.ok(texts(view.render(cx)).includes("Yes, rename it."));
+  talk = view;
+});
+
+await test("a failed answer says why, and Ask again in the thread's menu asks once more", async () => {
+  await comment(talk, lineKey(talk, "zero"), "Is this needed?");
+  assert.ok(texts(talk.render(cx)).includes("Claude Code is not signed in"));
+  const key = diffList(talk.render(cx)).keys.find((k, i, keys) => keys[i - 1] === lineKey(talk, "zero"));
+  diffList(talk.render(cx)).handlers.item_secondary_click(key, {}, cx);
+  answer(SECOND_COPY, "No, drop it.");
+  chooseMenu(H.overlays.at(-1), "Ask again");
+  talk.render(cx); await settle();
+  assert.ok(texts(talk.render(cx)).includes("No, drop it."));
+});
+
+await test("Delete thread removes the thread and the session copy it made", async () => {
+  addSession(SECOND_COPY, 0);
+  const key = diffList(talk.render(cx)).keys.find((k, i, keys) => keys[i - 1] === lineKey(talk, "three"));
+  diffList(talk.render(cx)).handlers.item_secondary_click(key, {}, cx);
+  chooseMenu(H.overlays.at(-1), "Delete thread");
+  talk.render(cx); await settle();
+  assert.ok(!texts(talk.render(cx)).includes("It closes the list."));
+  assert.ok(!savedComments().some((c) => c.text === "three"), "gone from the file");
+  assert.ok(!readdirSync(sessions).includes(`${SECOND_COPY}.jsonl`), "its copy is deleted");
+  assert.ok(readdirSync(sessions).includes(`${MAIN_SESSION}.jsonl`), "the person's own session is kept");
+});
+
+await test("Escape closes the comment box; in two columns the pressed side picks the line", async () => {
+  H.shared["git-changes.layout"] = "split";
+  const tree = talk.render(cx), pair = `r${talk.pairs.findIndex((p) => p.left?.text === "two")}`;
+  byId(tree, `${talk.listId}-split`).handlers["mouse_down:left"]({ local_position: { x: 50, y: 5 }, bounds: { x: 0, y: 0, width: 800, height: 600 } }, cx);
+  diffList(tree).handlers.item_click(pair, cx);
+  assert.equal(talk.target.anchor.kind, "-");
+  byId(talk.render(cx), "git-changes-diff").handlers.key_down({ key: "escape" }, cx);
+  assert.equal(talk.target, null);
+  assert.ok(!diffList(talk.render(cx)).keys.includes("compose"));
+  H.shared["git-changes.layout"] = "unified";
+});
+
+await test("a long answer makes its thread taller, wrapped at the card's width", async () => {
+  const { wrappedLines } = await import(pathToFileURL(join(lib, "comments.js")).href);
+  assert.equal(wrappedLines("aaaaa bbbbb ccccc", 11), 2);
+  assert.equal(wrappedLines("a".repeat(25), 10), 3);
+  assert.equal(wrappedLines("a\nb", 10), 2);
+  const list = diffList(talk.render(cx)), at = list.keys.indexOf(lineKey(talk, "TWO")) + 1;
+  talk.bodyWidth = 300; talk.imageVersion++;
+  const narrow = diffList(talk.render(cx));
+  assert.ok(narrow.sizes[at] > list.sizes[at], `${narrow.sizes[at]} > ${list.sizes[at]}`);
 });
 
 rmSync(base, { recursive: true, force: true });

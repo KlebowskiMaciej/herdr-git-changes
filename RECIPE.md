@@ -272,7 +272,18 @@ hint in 11px `dim`. Danger items are `ansi1`.
   - `history.js`: the graph.
   - `lanes.js`: lane layout, copied unchanged from herdr-git-graph.
   - `diff.js`: loading diffs, `showInTab()`, and the diff tab with its one-
-    and two-column views and its image rows.
+    and two-column views, its image rows, and its comment threads (a thread
+    row and a comment box row inserted under a line, both in the one list).
+  - `comments.js`: comment threads. Pins a comment to a line by path, text and
+    nearest number (`placeComments()`), estimates a thread's wrapped height,
+    saves `<git dir>/git-changes-comments.json` with `writeTextFile` and its
+    stale-snapshot retry, and asks Claude Code. The first question finds the
+    newest `*.jsonl` session in `${CLAUDE_CONFIG_DIR:-~/.claude}/projects/<cwd
+    with every non-alphanumeric as ->` for the repository and for every Claude
+    Code pane inside it, skipping the copies threads already made, then runs
+    `claude -p --resume <id> --fork-session --output-format json --tools
+    Read,Grep,Glob --append-system-prompt <short> -- <prompt>`. Replies run the
+    same without `--fork-session`, on the thread's own copy.
   - `menu.js`: menus.
   - `git.js`: parsing, `fileTree()` (folders first, single-folder chains
     merged, folded paths skipped, each folder's staged state), `splitRows()`
@@ -299,7 +310,7 @@ hint in 11px `dim`. Danger items are `ansi1`.
     `show --format= -p --diff-merges=first-parent <hash>`
   - Every action is an argv list in `git.js`.
 - **Herdr:** `spaces`, `panes`, `focused`, `exec`, `readTextFile`,
-  `watchFolder`, `theme`, `settings`, `notify`, `shared`, `setShared`,
+  `writeTextFile`, `watchFolder`, `theme`, `settings`, `notify`, `shared`, `setShared`,
   `openOverlay`, `closeOverlay`, `props`, `appHome`, `window` (the platform),
   `fs/promises` (`exists`, `mkdir`, `readFile`, `readdir`, `unlink`), and `run`
   for `tab.new`, `tab.rename`, `tab.select`, `tab.close`.
@@ -338,6 +349,18 @@ hint in 11px `dim`. Danger items are `ansi1`.
   16 lanes with them and 7 without. That's why ☁ is off by default.
 - **Submodules** have no hunks: their diff is the `Subproject commit` lines
   or "Submodule: untracked content".
+- **A thread's height is a guess.** A virtual list needs every row's height
+  before it draws, and Herdr can't measure wrapped text. The thread card uses
+  the mono font, so `wrappedLines()` counts word-wrapped lines from the card's
+  width at 7.25px a character.
+- **`claude -p --continue` is the wrong fork.** The copy a thread makes is the
+  newest session in the folder, so the next `--continue` would fork the copy.
+  Resume by id and skip the sessions threads made; delete a thread's session
+  with the thread.
+- **The comment box sits in a list row.** Its `TextareaState` lives on the
+  view, made once in `init`, because a list's renderer can't make state. Rows
+  can't hold handlers, so a click reaches lines and threads through
+  `on_item_click`, and the thread menu through `on_item_secondary_click`.
 - **Two columns need one list.** Two virtual lists side by side drift apart
   as they scroll. Pair the rows first, then draw each pair as one row with
   both halves. Sideways scrolling is an offset applied to both texts; the
@@ -397,3 +420,8 @@ hint in 11px `dim`. Danger items are `ansi1`.
 - Turning ☁ on or off adds or removes a remote-only branch's lane.
 - ⌘C, with a commit in the diff tab, puts its 40-character hash on the
   clipboard.
+- With Claude Code open in the repository: click an added line in the diff tab,
+  type a question, press ⌘↩ (Ctrl+↩). Within seconds a one- or two-sentence
+  answer shows under it. `claude --resume` in that folder lists the original
+  session unchanged and one new copy. A reply in the thread adds no new copy.
+  Delete thread removes the copy from `claude --resume`.
