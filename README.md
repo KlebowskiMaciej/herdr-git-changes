@@ -59,10 +59,13 @@ picks its own Changes panel, so you point your layouts at this one
 Every file your branch's commits changed since it left its base, as a merge
 request shows it. Staged, unstaged and untracked work stays in Changes.
 
-- **The base** is origin's default branch (`origin/HEAD`), else `origin/main`,
-  `origin/master`, `main` or `master`, whichever is there first. Files are
-  compared with the merge base of that branch and HEAD, so work that landed on
-  the base after you branched off doesn't show. On `main` itself, it shows
+- **The base** is the branch your branch most likely started from, as a
+  merge request's target: of `main`, `master`, `develop`, every `release/…`
+  (local and on origin) and origin's default branch, the one that lacks the
+  fewest of your commits. A branch made from `release/86005.x` compares with
+  it, even when `main` or the default branch is far ahead. Files are compared
+  with the merge base of that branch and HEAD, so work that landed on the base
+  after you branched off doesn't show. A rename counts as a delete and an add. On `main` itself, it shows
   the files of your commits that `origin/main` doesn't have yet.
 - **Tree or flat**, the same switch as in Changes. Click a folder to fold it;
   folding is remembered apart from Changes.

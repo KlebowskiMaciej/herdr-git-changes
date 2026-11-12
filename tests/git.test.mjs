@@ -335,22 +335,35 @@ test("Revert and the commit's own diff", () => {
 
 // --- the Repo tab: what the branch changed since its base ----------------------------
 
-const baseOf = (cwd) => G.pickBase(run(cwd, [...G.READ, ...G.BASE_REFS]));
+const currentOf = (cwd) => run(cwd, ["branch", "--show-current"]).trim() || null;
+const baseOf = (cwd) => G.nearestBase(G.parseBaseRefs(run(cwd, [...G.READ, ...G.baseRefsArgs(true)])), currentOf(cwd));
+const baseCountedOneByOne = (cwd) => G.nearestBase(G.parseBaseRefs(run(cwd, [...G.READ, ...G.baseRefsArgs(false)]))
+  .map((b) => { const [ahead, behind] = G.parseAheadBehind(run(cwd, [...G.READ, ...G.aheadBehindArgs(b.ref)])); return { ...b, ahead, behind }; }), currentOf(cwd));
 
-test("the base is origin's default branch, else origin/main, else the local main or master", () => {
-  const local = repo("base-local");
-  commit(local, "init");
-  assert.equal(baseOf(local), "main");
-  run(local, ["branch", "-m", "master"]);
-  assert.equal(baseOf(local), "master");
-  run(local, ["branch", "-m", "trunk"]);
-  assert.equal(baseOf(local), null, "no main or master");
-  const remote = repo("base-remote", { remote: true });
-  commit(remote, "init"); run(remote, ["push", "-q", "origin", "main"]); run(remote, ["fetch", "-q"]);
-  assert.equal(baseOf(remote), "origin/main");
-  run(remote, ["push", "-q", "origin", "main:develop"]); run(remote, ["fetch", "-q"]);
-  run(remote, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop"]);
-  assert.equal(baseOf(remote), "origin/develop", "origin/HEAD names the default branch");
+test("the base is the nearest main, master, develop or release branch, as a merge request's target", () => {
+  const r = repo("base-release", { remote: true });
+  commit(r, "init"); commit(r, "main moves on");
+  run(r, ["switch", "-qc", "release/1.x", "HEAD~1"]); commit(r, "release 1 fix");
+  run(r, ["switch", "-qc", "release/2.x", "main"]); commit(r, "release 2 work");
+  run(r, ["push", "-q", "origin", "main", "release/1.x", "release/2.x"]); run(r, ["fetch", "-q"]);
+  run(r, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/release/2.x"]);
+  run(r, ["switch", "-qc", "feature", "origin/release/1.x"]); commit(r, "feature one"); commit(r, "feature two");
+  assert.equal(baseOf(r), "origin/release/1.x", "the release it started from, not main or the default branch; remote before local");
+  assert.equal(baseCountedOneByOne(r), "origin/release/1.x", "the same before git 2.41");
+  run(r, ["push", "-q", "origin", "--delete", "release/1.x"]); run(r, ["fetch", "-q", "--prune"]);
+  assert.equal(baseOf(r), "release/1.x", "a local branch counts too");
+  run(r, ["switch", "-q", "main"]); commit(r, "unpushed");
+  assert.equal(baseOf(r), "origin/main", "on main, the base is its upstream, never itself");
+});
+
+test("origin's default branch counts whatever its name, and without any base there is none", () => {
+  const r = repo("base-trunk", { remote: true });
+  run(r, ["branch", "-m", "trunk"]); commit(r, "init");
+  assert.equal(baseOf(r), null, "no main, master, develop or release");
+  run(r, ["push", "-q", "origin", "trunk"]); run(r, ["fetch", "-q"]);
+  run(r, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"]);
+  run(r, ["switch", "-qc", "feature"]); commit(r, "work");
+  assert.equal(baseOf(r), "origin/trunk");
 });
 
 test("a branch's files since its base: only what its commits changed, with their line counts", () => {

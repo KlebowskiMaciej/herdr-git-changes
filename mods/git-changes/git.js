@@ -25,14 +25,36 @@ export function historyArgs({ all, remotes = true, upstream, limit }) {
 const DIFF = ["--no-ext-diff", "--no-textconv", "--no-color"];
 export const LIMIT = 1000;
 
-const BASE_PREFERENCE = ["refs/remotes/origin/main", "refs/remotes/origin/master", "refs/heads/main", "refs/heads/master"];
-export const BASE_REFS = ["for-each-ref", "--format=%(refname)%1f%(symref)", "refs/remotes/origin/HEAD", ...BASE_PREFERENCE];
+const BASE_BRANCHES = ["main", "master", "develop", "release"];
+const BASE_PATTERNS = ["refs/remotes/origin/HEAD", ...BASE_BRANCHES.flatMap((name) => [`refs/heads/${name}`, `refs/remotes/origin/${name}`])];
+const REMOTE_PREFIX = "refs/remotes/";
 
-/** The branch to compare with, from `BASE_REFS`' output: origin's default branch, else main or master, remote first; null without one. */
-export function pickBase(text) {
-  const refs = new Map(text.split("\n").filter(Boolean).map((line) => line.split("\x1f")));
-  const name = refs.get("refs/remotes/origin/HEAD") || BASE_PREFERENCE.find((ref) => refs.has(ref));
-  return name ? name.replace(/^refs\/(heads|remotes)\//, "") : null;
+/** The branches a branch may have started from; with `counts`, each one's distance to HEAD too (git 2.41 or newer). */
+export const baseRefsArgs = (counts) => ["for-each-ref", `--format=%(refname)%1f%(symref)${counts ? "%1f%(ahead-behind:HEAD)" : ""}`, ...BASE_PATTERNS];
+export const aheadBehindArgs = (ref) => ["rev-list", "--left-right", "--count", `${ref}...HEAD`];
+export const parseAheadBehind = (text) => text.trim().split(/\s+/).map(Number);
+
+/** `baseRefsArgs`' output as { ref, name, ahead, behind }; without counts, `ahead` and `behind` are NaN. */
+export function parseBaseRefs(text) {
+  return text.split("\n").filter(Boolean).map((line) => {
+    const [refname, symref, counts = ""] = line.split("\x1f"), ref = symref || refname;
+    const [ahead, behind] = counts ? parseAheadBehind(counts) : [NaN, NaN];
+    return { ref, name: ref.replace(/^refs\/(heads|remotes)\//, ""), ahead, behind };
+  });
+}
+
+const branchPart = (base) => (base.ref.startsWith(REMOTE_PREFIX) ? base.name.slice(base.name.indexOf("/") + 1) : base.name);
+const byNearest = (a, b) => a.behind - b.behind || a.ahead - b.ahead || branchPart(a).length - branchPart(b).length
+  || Number(!a.ref.startsWith(REMOTE_PREFIX)) - Number(!b.ref.startsWith(REMOTE_PREFIX)) || a.name.localeCompare(b.name);
+
+/**
+ * The branch HEAD most likely started from: of `bases`, the one with the fewest commits of HEAD's
+ * that it doesn't have, as a merge request's target would be. The checked-out branch `current`
+ * is never its own base, so on main the base is origin/main. Null when there's none.
+ */
+export function nearestBase(bases, current) {
+  const own = current ? `refs/heads/${current}` : null;
+  return bases.filter((b) => b.ref !== own && Number.isFinite(b.behind)).sort(byNearest)[0]?.name ?? null;
 }
 
 export const mergeBaseArgs = (base) => ["merge-base", "HEAD", base];

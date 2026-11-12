@@ -47,12 +47,25 @@ const isTimeout = (e) => /time/i.test(String(e?.message ?? e));
 const sumOf = (entries, field) => entries.reduce((n, e) => n + e[field], 0);
 const failedRead = (error, base = null) => ({ base, error, entries: [], signature: error });
 
+/** The branches HEAD may have started from, each with its distance to HEAD; counted one by one before git 2.41. */
+async function baseCandidates(git) {
+  const counted = await git(G.baseRefsArgs(true));
+  if (counted.code === 0) return G.parseBaseRefs(counted.stdout);
+  const plain = await git(G.baseRefsArgs(false));
+  if (plain.code !== 0) return [];
+  return Promise.all(G.parseBaseRefs(plain.stdout).map(async (base) => {
+    const r = await git(G.aheadBehindArgs(base.ref));
+    const [ahead, behind] = r.code === 0 ? G.parseAheadBehind(r.stdout) : [NaN, NaN];
+    return { ...base, ahead, behind };
+  }));
+}
+
 /** What the Repo tab lists: every file the branch's commits changed since it left its base, or why there's nothing to compare. */
 async function readBranchFiles(git, status) {
   const head = status.branch.oid;
   if (!head) return failedRead("No commits yet");
-  const refs = await git(G.BASE_REFS), base = refs.code === 0 ? G.pickBase(refs.stdout) : null;
-  if (!base) return failedRead("No main or master branch to compare with");
+  const base = G.nearestBase(await baseCandidates(git), status.branch.head);
+  if (!base) return failedRead("No main, master, develop or release branch to compare with");
   const found = await git(G.mergeBaseArgs(base));
   if (found.code !== 0) return failedRead(`No commit in common with ${base}`, base);
   const mergeBase = found.stdout.trim();
