@@ -99,7 +99,10 @@ const H = globalThis.__herdr = {
   exec: async (cmd, args, { cwd } = {}) => {
     H.execs.push([cmd, args]);
     if (OPENERS.includes(cmd)) return { code: 0, stdout: "", stderr: "" };
-    if (cmd === "claude") return H.claude(args, cwd);
+    if (cmd === "sh" && args[1].startsWith("exec claude")) {
+      assert.match(args[1], /< \/dev\/null$/, "claude -p runs with its input closed");
+      return H.claude(args.slice(3), cwd);
+    }
     const r = spawnSync(cmd, args, { cwd, env, encoding: "utf8" });
     return { code: r.status, stdout: r.stdout, stderr: r.stderr };
   },
@@ -783,6 +786,28 @@ await test("Escape closes the comment box; in two columns the pressed side picks
   assert.equal(talk.target, null);
   assert.ok(!diffList(talk.render(cx)).keys.includes("compose"));
   H.shared["git-changes.layout"] = "unified";
+});
+
+await test("Enter sends and Shift+Enter doesn't; while Claude answers, a spinner shows under the question", async () => {
+  let release;
+  answers.push(new Promise((resolve) => { release = () => resolve({ code: 0, stdout: JSON.stringify({ result: "Run them first.", session_id: FIRST_COPY }), stderr: "" }); }));
+  const keys = diffList(talk.render(cx)).keys;
+  diffList(talk.render(cx)).handlers.item_click(keys[keys.indexOf(lineKey(talk, "TWO")) + 1], cx);
+  talk.composer.set_value("And the tests?");
+  talk.composer.handlers.submit({ shift: true }, cx);
+  assert.ok(talk.target, "Shift+Enter keeps the box open");
+  talk.composer.handlers.submit({}, cx);
+  const waiting = talk.render(cx);
+  assert.ok(texts(waiting).includes("Thinking…"));
+  assert.ok(walk(waiting).some((n) => n.props.frames), "a spinner");
+  release(); await settle();
+  assert.ok(texts(talk.render(cx)).includes("Run them first."));
+});
+
+await test("every line has a comment icon, in the accent colour on a line with a thread", async () => {
+  const marks = walk(talk.render(cx)).filter((n) => n.kind === "svg" && n.props.path[0].endsWith("message-square.svg"));
+  assert.equal(marks.length, talk.rows.filter((r) => ["+", "-", " "].includes(r.kind)).length);
+  assert.equal(marks.filter((n) => n.props.text_color).length, 2, "TWO and zero have threads");
 });
 
 await test("a long answer makes its thread taller, wrapped at the card's width", async () => {

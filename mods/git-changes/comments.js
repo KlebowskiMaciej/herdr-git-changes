@@ -27,7 +27,8 @@ const NEWEST_SESSIONS = `cd ${CLAUDE_PROJECTS} 2>/dev/null || exit 0
 dirs="$*"; set --
 for d in $dirs; do for f in "$d"/*.jsonl; do [ -f "$f" ] && set -- "$@" "$f"; done; done
 [ "$#" -gt 0 ] && ls -t -- "$@"`;
-const REMOVE_SESSION = `cd ${CLAUDE_PROJECTS} 2>/dev/null && rm -rf -- "$1/$2.jsonl" "$1/$2"`;
+const RUN_CLAUDE = 'exec claude "$@" < /dev/null';
+const REMOVE_SESSION =`cd ${CLAUDE_PROJECTS} 2>/dev/null && rm -rf -- "$1/$2.jsonl" "$1/$2"`;
 
 export const isLine = (row) => LINE_KINDS.has(row?.kind) && Boolean(row.path);
 export const linesOf = (row) => (row.kind === "pair" ? [...new Set([row.left, row.right])].filter(isLine) : isLine(row) ? [row] : []);
@@ -95,7 +96,7 @@ export function threadBlocks(comment, { asking = false, failure = null, orphan =
   const blocks = [];
   if (orphan) blocks.push({ tone: "dim", text: `Line ${comment.line} is no longer in this diff: ${comment.text.trim()}`, single: true });
   for (const m of comment.thread) blocks.push({ label: m.from === "you" ? "You" : "Claude", tone: m.from, text: m.text });
-  if (asking) blocks.push({ tone: "dim", text: "Claude is thinking…" });
+  if (asking) blocks.push({ label: "Claude", tone: "dim", text: "Thinking…", spinner: true });
   else if (failure) blocks.push({ tone: "error", text: failure });
   else if (awaitsAnswer(comment)) blocks.push({ tone: "dim", text: "No answer yet · right-click to ask again" });
   return blocks;
@@ -152,17 +153,16 @@ export async function findSession(root, on, taken) {
   return null;
 }
 
+/** Runs `claude` with its input closed: `claude -p` waits for an open input pipe to end before it answers. */
+const runClaude = (args, cwd, on) => exec("sh", ["-c", RUN_CLAUDE, "sh", ...args], { cwd, on, timeout: ASK_TIMEOUT });
+
 /** Sends the thread's open question to Claude Code and resolves with `{ text, session, cwd }`. */
 export async function askClaude(comment, { root, on, taken }) {
   const question = lastFrom(comment, "you");
-  if (comment.session) {
-    const r = await exec("claude", askArgs(question, comment.session, false), { cwd: comment.cwd, on, timeout: ASK_TIMEOUT });
-    return { ...parseAnswer(r), cwd: comment.cwd };
-  }
+  if (comment.session) return { ...parseAnswer(await runClaude(askArgs(question, comment.session, false), comment.cwd, on)), cwd: comment.cwd };
   const found = await findSession(root, on, taken);
   if (!found) throw new Error(`No Claude Code session found for ${root}. Start one there first.`);
-  const r = await exec("claude", askArgs(questionPrompt(comment, question), found.session, true), { cwd: found.cwd, on, timeout: ASK_TIMEOUT });
-  return { ...parseAnswer(r), cwd: found.cwd };
+  return { ...parseAnswer(await runClaude(askArgs(questionPrompt(comment, question), found.session, true), found.cwd, on)), cwd: found.cwd };
 }
 
 /** Deletes the session copy a thread made, so it leaves no trace in `claude --resume`. */

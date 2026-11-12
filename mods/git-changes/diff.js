@@ -16,7 +16,7 @@
 // context line. That code isn't used here; git.js has its own splitRows().
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, v_virtual_list, TextareaState, Textarea } from "gpui-base";
-import { exec, readTextFile, watchFolder, theme, settings, props, shared, setShared, spaces, panes, run, notify, openOverlay, window as appWindow } from "herdr";
+import { exec, readTextFile, watchFolder, theme, settings, props, shared, setShared, spaces, panes, run, notify, openOverlay } from "herdr";
 import * as G from "./git.js";
 import * as C from "./comments.js";
 import { icon, menuHeight } from "./menu.js";
@@ -31,7 +31,7 @@ const THREAD_INDENT = 54, THREAD_MARGIN = 16, MIN_CARD = 240, CHAR_WIDTH = 7.25,
 const CARD_PAD = 10, CARD_PAD_Y = 6, CARD_BORDER = 1, ROW_PAD_Y = 4, BLOCK_GAP = 4, COMPOSE_INPUT = 60;
 const CARD_FRAME = 2 * (ROW_PAD_Y + CARD_PAD_Y + CARD_BORDER);
 const COMPOSE_HEIGHT = CARD_FRAME + COMPOSE_INPUT + BLOCK_GAP + LINE;
-const MENU_WIDTH = 200;
+const MENU_WIDTH = 200, MARK = 16, SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], SPINNER_MS = 80;
 const mono = () => settings().font_family ?? "JetBrains Mono";
 
 const diffHeader = (path) => `diff --git a/${path} b/${path}`;
@@ -108,7 +108,7 @@ export class DiffView {
     this.asking = new Set(); this.failures = new Map(); this.target = null; this.threadVersion = 0; this.display = null;
     this.menuActions = {}; this.menuSerial = 0; this.pickSeen = shared("git-changes.pick")?.at; this.pressSide = "right";
     this.composer = TextareaState.new({ placeholder: "Comment on this line", rows: 3 });
-    this.composer.on("submit", (e, cx) => { if (e.secondary) this.send(cx); });
+    this.composer.on("submit", (e, cx) => { if (!e.shift) this.send(cx); });
     this.clearRows();
     cx.spawn(async () => pruneCache());
     this.sync(cx);
@@ -381,11 +381,23 @@ export class DiffView {
         .child(div().child(this.loading ? "Loading…" : "")));
   }
 
-  unifiedRow({ kind, old, number, text }, t) {
+  commentMark(line, t) {
+    const mark = div().w(MARK).h_full().flex_none().flex().items_center().justify_center();
+    if (!C.isLine(line)) return mark;
+    return mark.child(svg(icon("message-square")).size(11).when(Boolean(this.display?.placed.has(line)), (e) => e.text_color(t.accent)));
+  }
+
+  commentable(element, line, t) {
+    return element.when(C.isLine(line), (e) => e.text_color(t.background + "00").hover((s) => s.bg(t.hover).text_color(t.accent)));
+  }
+
+  unifiedRow(row, t) {
+    const { kind, old, number, text } = row;
     if (kind === "f") return div().w_full().px(12).h(HEAD).flex_none().flex().items_center().truncate().bg(t.raised).border_t(1).border_color(t.border).font_semibold().text_color(t.foreground).child(text);
     if (kind === "@") return div().w_full().px(12).h(ROW).flex_none().truncate().bg(t.raised).text_color(t.dim).child(text);
     const color = kind === "+" ? t.ansi2 : kind === "-" ? t.ansi1 : t.foreground;
-    return h_flex().w_full().h(ROW).flex_none().gap(8).when(kind === "+" || kind === "-", (e) => e.bg(color + "18"))
+    return this.commentable(h_flex().w_full().h(ROW).flex_none().gap(8).when(kind === "+" || kind === "-", (e) => e.bg(color + "18")), row, t)
+      .child(this.commentMark(row, t))
       .child(div().w(38).flex_none().text_right().text_color(t.dim).child(kind === "-" ? String(number) : kind === " " ? String(old) : ""))
       .child(div().w(38).flex_none().text_right().text_color(t.dim).child(kind === "+" || kind === " " ? String(number) : ""))
       .child(div().w(10).flex_none().text_color(color).child(kind === "+" || kind === "-" ? kind : ""))
@@ -398,9 +410,10 @@ export class DiffView {
     const side = (entry, left) => {
       const kind = entry?.kind, color = kind === "+" ? t.ansi2 : kind === "-" ? t.ansi1 : t.foreground;
       const number = !entry ? "" : left ? String(kind === " " ? entry.old : entry.number) : String(entry.number);
-      return h_flex().flex_1().min_w(0).h_full().gap(6).items_center().overflow_hidden()
+      return this.commentable(h_flex().flex_1().min_w(0).h_full().gap(6).items_center().overflow_hidden()
         .when(!left, (e) => e.border_l(1).border_color(t.border))
-        .when(kind === "+" || kind === "-", (e) => e.bg(color + "18")).when(!entry, (e) => e.bg(t.raised + "88"))
+        .when(kind === "+" || kind === "-", (e) => e.bg(color + "18")).when(!entry, (e) => e.bg(t.raised + "88")), entry, t)
+        .child(this.commentMark(entry, t))
         .child(div().w(38).flex_none().text_right().text_color(t.dim).child(number))
         .child(div().flex_1().min_w(0).overflow_hidden()
           .child(div().w(this.width).flex_none().ml(-this.offset).whitespace_nowrap().text_color(kind === " " ? t.foreground : color).child(entry?.text ?? "")));
@@ -496,17 +509,20 @@ export class DiffView {
   threadRow(entry, t) {
     const columns = this.cardColumns();
     const tones = { you: t.foreground, claude: t.foreground, dim: t.dim, error: t.ansi1 };
+    const text = (b) => (b.spinner
+      ? h_flex().h(LINE).gap(6).items_center().text_color(tones[b.tone])
+        .child(div().w(12).flex_none().text_color(t.accent).frames(SPINNER, SPINNER_MS)).child(b.text)
+      : div().line_height(LINE).text_color(tones[b.tone]).when(Boolean(b.single), (e) => e.truncate()).child(b.text));
     const blocks = this.blocksOf(entry).map((b) => v_flex().flex_none().h(C.blockLines(b, columns) * LINE).overflow_hidden()
-      .when(Boolean(b.label), (e) => e.child(div().h(LINE).flex_none().text_size(11).font_semibold().text_color(b.tone === "claude" ? t.accent : t.muted).child(b.label)))
-      .child(div().line_height(LINE).text_color(tones[b.tone]).when(Boolean(b.single), (e) => e.truncate()).child(b.text)));
+      .when(Boolean(b.label), (e) => e.child(div().h(LINE).flex_none().text_size(11).font_semibold().text_color(b.label === "Claude" ? t.accent : t.muted).child(b.label)))
+      .child(text(b)));
     return this.cardRow(this.threadHeight(entry), v_flex().border_color(t.border).bg(t.raised).children(blocks));
   }
 
   composeRow(t) {
-    const send = appWindow().platform === "macos" ? "⌘↩" : "Ctrl+↩";
     return this.cardRow(COMPOSE_HEIGHT, v_flex().border_color(t.accent).bg(t.background)
       .child(Textarea.new(this.composer).w_full().h(COMPOSE_INPUT).text_size(12).text_color(t.foreground).font_family(mono()))
-      .child(div().h(LINE).flex_none().truncate().text_size(11).text_color(t.dim).child(`${send} ask a copy of your Claude Code session · Esc cancel`)));
+      .child(div().h(LINE).flex_none().truncate().text_size(11).text_color(t.dim).child("↩ ask a copy of your Claude Code session · ⇧↩ new line · Esc cancel")));
   }
 
   rowView(row, t, layout) {
@@ -578,7 +594,7 @@ export class DiffView {
     const body = div().id(`${this.listId}-body`).flex_1().min_h(0).relative().font_family(mono()).text_size(12)
       .on_size_change((size, cx) => this.measured(size, cx))
       .when(layout === "unified", (e) => e.child(div().id(`${this.listId}-x`).size_full().overflow_x_scrollbar()
-        .child(div().w_full().min_w(this.width + 110).h_full().child(list))))
+        .child(div().w_full().min_w(this.width + 110 + MARK).h_full().child(list))))
       // Split: one list for both columns keeps them level; sideways scrolling moves both texts.
       .when(layout === "split", (e) => e.child(div().id(`${this.listId}-split`).size_full()
         .on_mouse_down("left", (ev) => { this.pressSide = ev.local_position && ev.bounds && ev.local_position.x < ev.bounds.width / 2 ? "left" : "right"; })

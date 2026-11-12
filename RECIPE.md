@@ -357,6 +357,12 @@ hint in 11px `dim`. Danger items are `ansi1`.
   newest session in the folder, so the next `--continue` would fork the copy.
   Resume by id and skip the sessions threads made; delete a thread's session
   with the thread.
+- **`claude -p` waits for its input to end.** Given an open input pipe, it
+  answers only when the pipe closes, so through `exec` it hung until the
+  timeout. Run it as `sh -c 'exec claude "$@" < /dev/null'`.
+- **The comment icon shows on hover without a group-hover.** A line row's
+  text colour is transparent and its hover style sets the accent; the icon has
+  no colour of its own, so it inherits it. Every other cell sets its own colour.
 - **The comment box sits in a list row.** Its `TextareaState` lives on the
   view, made once in `init`, because a list's renderer can't make state. Rows
   can't hold handlers, so a click reaches lines and threads through
@@ -420,8 +426,8 @@ hint in 11px `dim`. Danger items are `ansi1`.
 - Turning ☁ on or off adds or removes a remote-only branch's lane.
 - ⌘C, with a commit in the diff tab, puts its 40-character hash on the
   clipboard.
-- With Claude Code open in the repository: click an added line in the diff tab,
-  type a question, press ⌘↩ (Ctrl+↩). Within seconds a one- or two-sentence
-  answer shows under it. `claude --resume` in that folder lists the original
+- With Claude Code open in the repository: hover a line in the diff tab (it
+  lights up with a comment icon), click it, type a question, press Enter. A
+  spinner shows under it, then a one- or two-sentence answer. `claude --resume` in that folder lists the original
   session unchanged and one new copy. A reply in the thread adds no new copy.
   Delete thread removes the copy from `claude --resume`.

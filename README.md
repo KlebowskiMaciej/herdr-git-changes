@@ -83,11 +83,12 @@ the next click.
 
 ### Comments on a line, answered by Claude Code
 
-- **Click a line** of the diff to write a comment under it. Send it with
-  ⌘↩ (Ctrl+↩ on Linux and Windows). Esc closes the box. In two columns, click
-  the side you mean.
+- **Click a line** of the diff to write a comment under it. A line lights up
+  under the pointer, with a comment icon at its start; a line with a thread
+  keeps its icon in the accent colour. Enter sends, Shift+Enter starts a new
+  line, Esc closes the box. In two columns, click the side you mean.
 - **A copy of your Claude Code session answers** in one or two sentences, right
-  under your comment. The copy is a fork of the newest Claude Code session
+  under your comment. A spinner shows there until the answer comes. The copy is a fork of the newest Claude Code session
   started in the repository (or in a folder of it where a Claude Code terminal
   runs). It knows what that session knows, and the session itself does not
   change. The copy can only read files (`Read`, `Grep`, `Glob`).
@@ -170,7 +171,8 @@ the repository it does three things:
   it holds more than 300 files. It works on this computer only.
 - *Open folder* starts `xdg-open`, `open` or `explorer` on the folder.
 - *Open in terminal* runs Herdr's `tab.new` for the folder.
-- A comment on a line runs `claude -p` with the comment as an argument. To find
+- A comment on a line runs `claude -p` with the comment as an argument, through
+  `sh -c 'exec claude "$@" < /dev/null'` so it doesn't wait for input. To find
   the session to fork, it runs a fixed `sh -c` script that lists the newest
   `*.jsonl` files in Claude Code's `projects` folder
   (`$CLAUDE_CONFIG_DIR`, else `~/.claude`). Deleting a thread runs `rm` on that
