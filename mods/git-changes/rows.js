@@ -58,6 +58,15 @@ export function buildBranchRows({ entries, listMode, folded }) {
   return { rows, byKey: new Map(rows.map((row) => [row.key, row])) };
 }
 
+export const FOLDABLE = new Set(["section", "folder"]);
+export const isFolded = (row) => (row.type === "section" ? row.folded : !row.open);
+
+/** The index `step` rows from `at`, kept inside the list; from no row (-1), down starts at the first and up at the last. */
+export function stepIndex(at, step, count) {
+  if (at < 0) return step > 0 ? 0 : count - 1;
+  return Math.min(count - 1, Math.max(0, at + step));
+}
+
 /** The files a folder row stands for. */
 export const filesInside = (row) => row.list.filter((e) => e.path.startsWith(`${row.path}/`));
 

@@ -13,13 +13,13 @@
 // refresh are still its. Listens to herdr-git-graph's "git-graph.changed" so
 // both panels refresh after either acts.
 import { div, svg } from "gpui-kit";
-import { v_flex, h_flex, TextareaState, Textarea, Scrollbar, v_virtual_list } from "gpui-base";
-import { spaces, panes, focused, exec, watchFolder, theme, settings, notify, shared, setShared, openOverlay, run, props, window as appWindow } from "herdr";
+import { v_flex, h_flex, TextareaState, Textarea, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
+import { spaces, panes, focused, exec, watchFolder, theme, settings, notify, shared, setShared, openOverlay, run, props, nextCommand, window as appWindow } from "herdr";
 import * as G from "./git.js";
 import { icon, menuHeight } from "./menu.js";
 import { showInTab, shownIn, shownSource, getLayout, setLayout } from "./diff.js";
 import { History } from "./history.js";
-import { ROW, OUTER, START, PAD, INDENT, BOX, ACTION, COUNT, COUNT_GAP, BRANCH, buildRows, buildBranchRows, filesInside, zoneAt } from "./rows.js";
+import { ROW, OUTER, START, PAD, INDENT, BOX, ACTION, COUNT, COUNT_GAP, BRANCH, FOLDABLE, buildRows, buildBranchRows, filesInside, isFolded, stepIndex, zoneAt } from "./rows.js";
 
 // The focused terminal's folder, or `props.folder` when opened as a pane on one repository.
 function location() {
@@ -37,6 +37,11 @@ function location() {
 }
 const key = () => JSON.stringify(location());
 const itemKey = (it) => (it ? `${it.area}:${it.ref ?? it.hash ?? it.path ?? ""}` : "");
+const repoRowKey = (shown) => (shown?.area === "base-file" ? `file:${shown.path}` : null);
+const historyRowKey = (shown) => (shown?.area === "all" ? G.UNCOMMITTED : shown?.area === "commit" ? shown.hash : null);
+const MOVES = { up: -1, down: 1 };
+const FOLDS = { left: true, right: false };
+const KEYBOARD_BACK_MS = 150;
 const plain = (it) => JSON.parse(JSON.stringify(it));
 const ROW_VIEWS = { section: "sectionRowView", folder: "folderRowView", file: "fileRowView", stash: "stashRowView" };
 const ROW_ACTIONS = { section: "sectionAction", folder: "folderAction", file: "fileAction", stash: "stashAction" };
@@ -81,6 +86,8 @@ export class Panel {
     this.uid = `gc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     this.listId = `gc-rows-${Math.random().toString(36).slice(2)}`;
     this.repoListId = `gc-repo-${Math.random().toString(36).slice(2)}`;
+    this.changesScroll = VirtualListScrollHandle.new(); this.repoScroll = VirtualListScrollHandle.new();
+    this.cursor = {};
     this.repo = null; this.repoModel = null;
     this.model = null; this.press = null; this.signature = null;
     this.entries = []; this.stashes = []; this.remotes = []; this.last = null;
@@ -106,6 +113,7 @@ export class Panel {
     this.editor.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
     this.refresh(cx);
     cx.timer.every(10000, (cx) => this.refresh(cx));
+    cx.spawn(async (cx) => { for (;;) { if (await nextCommand() === "focus") this.handle.focus(); cx.notify(); } });
   }
 
   // --- reading ----------------------------------------------------------------
@@ -508,6 +516,73 @@ export class Panel {
     });
   }
 
+  // --- keyboard ---------------------------------------------------------------
+
+  changesKeys() {
+    const { rows, byKey } = this.rowsModel();
+    return { tab: "changes", rows, byKey, scroll: this.changesScroll, keyOf: itemKey,
+      open: (row, cx) => this[ROW_ACTIONS[row.type]](row, "body", cx) };
+  }
+
+  repoKeys() {
+    const { rows, byKey } = this.repoRowsModel();
+    return { tab: "repo", rows, byKey, scroll: this.repoScroll, keyOf: repoRowKey,
+      open: (row, cx) => this.repoRowClicked(row.key, cx) };
+  }
+
+  historyKeys() {
+    const h = this.history;
+    return { tab: "history", rows: h.commits.map((c) => ({ key: c.hash, type: "commit" })), byKey: h.index, scroll: h.scroll,
+      keyOf: historyRowKey, open: (row, cx) => this.pickCommit(h.find(row.key), 1, cx) };
+  }
+
+  keyboardList() {
+    if (this.tab === "history") return this.historyKeys();
+    return this.tab === "repo" ? this.repoKeys() : this.changesKeys();
+  }
+
+  /** The highlighted row: the last one clicked or reached by the keyboard, until the diff tab shows something else; then the row the diff tab shows. */
+  selectedKey(list, shownItem = this.shown()) {
+    const shown = list.keyOf(shownItem), cursor = this.cursor[list.tab];
+    return cursor?.shown === shown && list.byKey.has(cursor.key) ? cursor.key : shown;
+  }
+
+  remember(list, key) { this.cursor[list.tab] = { key, shown: list.keyOf(this.shown()) }; }
+
+  /** Handles ↑ ↓ (select the row above or below), ← → (fold or unfold a group or folder) and ↩ (open the row); false for any other key. */
+  navigate(key, cx) {
+    if (!(key in MOVES || key in FOLDS || key === "enter")) return false;
+    const list = this.keyboardList();
+    if (!this.root || !list.rows.length) return false;
+    const at = list.rows.findIndex((r) => r.key === this.selectedKey(list)), row = list.rows[at];
+    if (key in MOVES) this.moveTo(list, stepIndex(at, MOVES[key], list.rows.length), cx);
+    else if (key === "enter" || (FOLDABLE.has(row?.type) && isFolded(row) !== FOLDS[key])) this.openRow(list, row, cx);
+    return true;
+  }
+
+  /** Selects the row at `index` and scrolls to it; a file, stash or commit also opens in the diff tab. */
+  moveTo(list, index, cx) {
+    const row = list.rows[index];
+    if (FOLDABLE.has(row.type)) this.remember(list, row.key);
+    else this.openRow(list, row, cx);
+    list.scroll.scroll_to_item(index);
+    cx.notify();
+  }
+
+  /** Takes the keyboard back from the diff tab, which takes it when it opens or is selected. */
+  keepKeyboard(cx) {
+    this.handle.focus();
+    cx.timer.after(KEYBOARD_BACK_MS, () => this.handle.focus());
+  }
+
+  openRow(list, row, cx) {
+    if (!row) return;
+    list.open(row, cx);
+    this.remember(list, row.key);
+    this.keepKeyboard(cx);
+    cx.notify();
+  }
+
   // --- drawing ----------------------------------------------------------------
 
   iconButton(id, name, tip, onClick, t, { danger, disabled, label, active, size = 22 } = {}) {
@@ -568,16 +643,16 @@ export class Panel {
       .when(Boolean(tip), (el) => el.tooltip(tip));
   }
 
-  sectionRowView(row, t) {
-    return this.rowBody(row.key, t, { gap: COUNT_GAP })
+  sectionRowView(row, t, selected) {
+    return this.rowBody(row.key, t, { selected, gap: COUNT_GAP })
       .child(svg(icon(row.folded ? "chevron-right" : "chevron-down")).size(12).flex_none().text_color(t.dim))
       .child(div().flex_1().text_size(12).text_color(t.muted).child(row.title))
       .when(row.area !== "stash", (e) => e.child(this.checkboxView(`check-${row.area}`, row.staged, t)))
       .child(div().w(COUNT).flex_none().px(4).rounded(4).bg(t.raised).text_size(10.5).text_color(t.muted).text_center().child(String(row.count)));
   }
 
-  folderRowView(row, t) {
-    return this.rowBody(row.key, t, { gap: 6, depth: row.depth, tip: row.path })
+  folderRowView(row, t, selected) {
+    return this.rowBody(row.key, t, { selected, gap: 6, depth: row.depth, tip: row.path })
       .when(row.area !== BRANCH, (el) => el.child(this.checkboxView(`stage-dir-${row.key}`, row.staged, t)))
       .child(svg(icon(row.open ? "chevron-down" : "chevron-right")).size(11).flex_none().text_color(t.dim))
       .child(svg(icon("folder")).size(13).flex_none().text_color(t.muted))
@@ -612,9 +687,9 @@ export class Panel {
       .child(this.actionIcon(`drop-${s.ref}`, "trash", "Drop", t, { danger: true, armed: this.armed === `drop-${s.ref}` }));
   }
 
-  listRow(row, t, shownKey, height) {
+  listRow(row, t, selectedKey, height) {
     return h_flex().id(`row-${row.key}`).w_full().h(height).flex_none().px(OUTER)
-      .child(this[ROW_VIEWS[row.type]](row, t, row.key === shownKey));
+      .child(this[ROW_VIEWS[row.type]](row, t, row.key === selectedKey));
   }
 
   pressed(e) {
@@ -624,7 +699,9 @@ export class Panel {
   rowClicked(key, cx) {
     const row = this.rowsModel().byKey.get(key), press = this.press, zoom = settings().zoom ?? 1;
     this.press = null;
-    if (row) this[ROW_ACTIONS[row.type]](row, press ? zoneAt(row, press.x / zoom, press.width / zoom) : "body", cx);
+    if (!row) return;
+    this[ROW_ACTIONS[row.type]](row, press ? zoneAt(row, press.x / zoom, press.width / zoom) : "body", cx);
+    this.remember(this.changesKeys(), key);
   }
 
   sectionAction(row, zone, cx) {
@@ -657,15 +734,16 @@ export class Panel {
     else if (row?.type === "stash") this.stashMenu(row.stash, cx);
   }
 
-  fileList(t, shownKey) {
+  fileList(t, selectedKey) {
     const { rows } = this.rowsModel(), zoom = settings().zoom ?? 1;
     const rowPx = Math.max(1, Math.round(ROW * zoom)), height = rowPx / zoom;
     return div().id("git-changes-rows").flex_1().min_h(0).relative().py(4)
       .on_mouse_down("left", (e) => this.pressed(e))
       .child(v_virtual_list(this.listId, rows.length, rowPx, (i) => rows[i].key,
-        (range) => rows.slice(range.start, range.end).map((row) => this.listRow(row, t, shownKey, height)))
+        (range) => rows.slice(range.start, range.end).map((row) => this.listRow(row, t, selectedKey, height)))
         .on_item_click((key, cx) => this.rowClicked(key, cx))
         .on_item_secondary_click((key, _e, cx) => this.rowMenu(key, cx))
+        .track_scroll(this.changesScroll)
         .size_full())
       .child(Scrollbar.vertical(this.listId).viewport_from_layout().absolute().inset_0());
   }
@@ -674,6 +752,7 @@ export class Panel {
     const row = this.repoRowsModel().byKey.get(key);
     if (row?.type === "folder") this.fold(`${BRANCH}:${row.path}`, cx);
     else if (row?.type === "file") this.pickBranch({ ...row.entry, area: "base-file" }, cx);
+    if (row) this.remember(this.repoKeys(), key);
   }
 
   repoRowMenu(key, cx) {
@@ -691,14 +770,15 @@ export class Panel {
     ], cx);
   }
 
-  repoList(t, shownKey) {
+  repoList(t, selectedKey) {
     const { rows } = this.repoRowsModel(), zoom = settings().zoom ?? 1;
     const rowPx = Math.max(1, Math.round(ROW * zoom)), height = rowPx / zoom;
     return div().id("git-changes-repo-rows").flex_1().min_h(0).relative().py(4)
       .child(v_virtual_list(this.repoListId, rows.length, rowPx, (i) => rows[i].key,
-        (range) => rows.slice(range.start, range.end).map((row) => this.listRow(row, t, shownKey, height)))
+        (range) => rows.slice(range.start, range.end).map((row) => this.listRow(row, t, selectedKey, height)))
         .on_item_click((key, cx) => this.repoRowClicked(key, cx))
         .on_item_secondary_click((key, _e, cx) => this.repoRowMenu(key, cx))
+        .track_scroll(this.repoScroll)
         .size_full())
       .child(Scrollbar.vertical(this.repoListId).viewport_from_layout().absolute().inset_0());
   }
@@ -708,7 +788,7 @@ export class Panel {
     if (!this.repo) return notice("Loading the branch's changes…");
     if (this.repo.error) return notice(this.repo.error);
     if (!this.repo.entries.length) return notice(`No commits since ${this.repo.base}`);
-    return view.child(this.repoList(t, shown?.area === "base-file" ? `file:${shown.path}` : null));
+    return view.child(this.repoList(t, this.selectedKey(this.repoKeys(), shown)));
   }
 
   emptyNotice(t) {
@@ -717,11 +797,11 @@ export class Panel {
       .when(this.branch?.ahead > 0, (e) => e.child(div().text_size(11).child(`${this.branch.ahead} commit${this.branch.ahead > 1 ? "s" : ""} to push`)));
   }
 
-  changesView(t, shownKey) {
+  changesView(t, shown) {
     const list = v_flex().id("git-changes-list").flex_1().min_h(0);
     if (!this.root) return list.p(6).child(div().p(8).text_color(t.dim).child(this.error || (this.loading ? "Loading changes…" : "No folder")));
     return list.when(this.entries.length === 0, (e) => e.child(this.emptyNotice(t)))
-      .when(this.rowsModel().rows.length > 0, (e) => e.child(this.fileList(t, shownKey)));
+      .when(this.rowsModel().rows.length > 0, (e) => e.child(this.fileList(t, this.selectedKey(this.changesKeys(), shown))));
   }
 
   // A row of the graph picked: the uncommitted row shows every change.
@@ -729,9 +809,9 @@ export class Panel {
 
   historyView(t, shown) {
     return this.history.view(t, {
-      selected: shown?.area === "all" ? G.UNCOMMITTED : shown?.area === "commit" ? shown.hash : null,
+      selected: this.selectedKey(this.historyKeys(), shown),
       panelWidth: this.panelWidth, loading: this.loading,
-      onPick: (c, clicks, cx) => this.pickCommit(c, clicks, cx),
+      onPick: (c, clicks, cx) => { this.pickCommit(c, clicks, cx); this.remember(this.historyKeys(), c.hash); },
       onMenu: (c, cx) => (c.uncommitted ? this.optionsMenu(cx) : this.commitMenu(c, cx)),
       onMore: (cx) => { this.history.more(); this.refresh(cx); cx.notify(); },
     });
@@ -882,6 +962,7 @@ export class Panel {
       ? this.historyView(t, shown)
       : div().flex_1().p(12).text_color(t.dim).child(this.hasHead ? "Loading history…" : "No commits yet"));
     return v_flex().id("git-changes").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13).track_focus(this.handle)
+      .on_mouse_down("left", () => this.handle.focus())
       .on_size_change((size, cx) => {
         const width = Math.round(size.width / (settings().zoom ?? 1));
         if (width !== this.panelWidth) { this.panelWidth = width; cx.notify(); }
@@ -891,12 +972,13 @@ export class Panel {
         // ⌘C on the panel (not while typing) copies the selected commit's hash.
         else if ((e.keystroke === "cmd-c" || e.keystroke === "ctrl-shift-c") && !this.typing && this.shown()?.area === "commit") { this.copyHash(this.shown(), cx); cx.stop_propagation(); }
         else if (e.key === "escape" && this.typing) { this.typing = false; this.handle.focus(); cx.stop_propagation(); cx.notify(); }
+        else if (!this.typing && this.navigate(e.keystroke, cx)) cx.stop_propagation();
       })
       .child(this.tabs(t))
       .when(Boolean(this.root), (e) => e.child(this.toolbar(t)))
       .when(history, (e) => e.child(v_flex().flex_1().min_h(0).child(graph)))
       .when(repo, (e) => e.child(this.repoView(t, shown)))
-      .when(!history && !repo, (e) => e.child(this.changesView(t, shownKey)))
+      .when(!history && !repo, (e) => e.child(this.changesView(t, shown)))
       .when(limited, (e) => e.child(div().px(12).py(4).text_size(11).text_color(t.dim).child(`Showing the first ${G.LIMIT.toLocaleString()} files`)))
       .when(Boolean(this.note), (e) => e.child(div().id("note").px(10).py(6).flex_none().border_t(1).border_color(t.border).text_size(11).text_color(t.ansi1).cursor_pointer().tooltip("Click to dismiss")
         .on_click((_e, cx) => { this.note = null; cx.notify(); }).child(this.note)))

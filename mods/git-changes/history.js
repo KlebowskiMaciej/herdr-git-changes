@@ -10,7 +10,7 @@
 // Only the rows on screen are drawn (a virtual list); scrolling to the end
 // reads the next page.
 import { div, svg, PathBuilder } from "gpui-kit";
-import { h_flex, Scrollbar, v_virtual_list } from "gpui-base";
+import { h_flex, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import { settings } from "herdr";
 import { layoutLanes } from "./lanes.js";
 import * as G from "./git.js";
@@ -25,6 +25,7 @@ export const laneColors = (t) => [t.ansi4, t.ansi2, t.ansi5, t.ansi3, t.ansi6, t
 export class History {
   constructor() {
     this.listId = `gc-history-${Math.random().toString(36).slice(2)}`;
+    this.scroll = VirtualListScrollHandle.new();
     this.all = localStorage.getItem("history-all") !== "0";
     // Remote branches each take a lane: off, only the upstream shows.
     this.remotes = localStorage.getItem("history-remotes") === "1";
@@ -150,6 +151,7 @@ export class History {
           if (c) onPick(c, clicks, cx);
         })
         .on_item_secondary_click((key, _e, cx) => { const c = this.find(key); if (c) onMenu(c, cx); })
+        .track_scroll(this.scroll)
         .size_full())
       .child(Scrollbar.vertical(this.listId).viewport_from_layout().absolute().inset_0());
   }

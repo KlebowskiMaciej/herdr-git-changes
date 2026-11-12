@@ -1,6 +1,6 @@
 // Tests the list's row model, where a click lands in a row, and reading an image's
 // size from its own bytes. Nothing here needs Herdr or git. Run: node tests/rows.test.mjs
-import { buildRows, buildBranchRows, zoneAt, zoneCenter, filesInside, ACTION, BOX } from "../mods/git-changes/rows.js";
+import { buildRows, buildBranchRows, zoneAt, zoneCenter, filesInside, stepIndex, ACTION, BOX } from "../mods/git-changes/rows.js";
 import { imageSize, fitSize, formatBytes } from "../mods/git-changes/imageinfo.js";
 import { png, gif, jpeg, webpLossless, svgText } from "./fixtures.mjs";
 import assert from "node:assert/strict";
@@ -72,6 +72,17 @@ test("every row has its own key, and the keys find the rows", () => {
 
 test("no changes and no stashes: no rows", () => {
   assert.deepEqual(buildRows({ entries: [], stashes: [], listMode: "tree", folded: new Set(), collapsed: {} }).rows, []);
+});
+
+// --- the arrow keys -----------------------------------------------------------------------
+
+test("an arrow key moves one row and stops at either end; from no row, ↓ starts at the top and ↑ at the bottom", () => {
+  assert.equal(stepIndex(2, 1, 5), 3);
+  assert.equal(stepIndex(2, -1, 5), 1);
+  assert.equal(stepIndex(4, 1, 5), 4);
+  assert.equal(stepIndex(0, -1, 5), 0);
+  assert.equal(stepIndex(-1, 1, 5), 0);
+  assert.equal(stepIndex(-1, -1, 5), 4);
 });
 
 // --- where a click lands -----------------------------------------------------------------

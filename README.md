@@ -50,6 +50,11 @@ picks its own Changes panel, so you point your layouts at this one
   machine, only the terminal tab is offered.
 - **On a stash:** click to see its diff, new files included. The buttons at the
   end of the row Apply, Pop or Drop it.
+- **Arrow keys** (click the list first): ↓ and ↑ select the row below and
+  above. A file or a stash opens its diff at once; a group or a folder only
+  lights up. ← folds the selected group or folder, → unfolds it, ↩ toggles it.
+  The list scrolls to keep the row on screen. The keys do nothing while you
+  type in the message box.
 - **Big lists stay quick.** Only the rows on screen are drawn, so a worktree
   with hundreds of changed files scrolls and hovers as smoothly as one with
   three. A refresh that finds nothing new redraws nothing.
@@ -72,7 +77,7 @@ request shows it. Staged, unstaged and untracked work stays in Changes.
 - **Click a file** to see what the commits changed in it (merge base to
   HEAD) in the main area.
   View Diff shows all of them at once. Right-click a file or a folder to open
-  its folder or copy its path.
+  its folder or copy its path. The arrow keys work as in Changes.
 - The toolbar shows the lines added and removed, and how many files changed
   since which base.
 - No checkboxes and no discard here: stage and discard in Changes.
@@ -179,7 +184,8 @@ Controls:
   the outer ones are cut off. A row shows one label and folds the rest into
   `+N`.
 - **Clicking a commit** shows its diff in the main area; the uncommitted row
-  shows every change. ⌘C copies the shown commit's hash.
+  shows every change. ⌘C copies the shown commit's hash. ↓ and ↑ open the
+  commit below and above.
 - **Right-click a commit** to check out a branch on it, a remote branch
   (tracking it) or the commit itself, show its diff, copy its hash, short hash
   or message, revert it, or uncommit it if it's the last one.

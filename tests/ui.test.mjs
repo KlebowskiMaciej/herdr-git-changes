@@ -65,6 +65,7 @@ export function v_virtual_list(id, count, sizes, key, render) {
   return e;
 }
 export const Scrollbar = { vertical: () => el("bar") };
+export const VirtualListScrollHandle = { new: () => ({ scroll_to_item(i) { H.scrolledTo = i; }, scroll_to_bottom() {}, release: () => true }) };
 const state = () => ({ v: "", handlers: {}, value() { return this.v; }, set_value(v) { this.v = v; }, on(event, fn) { this.handlers[event] = fn; }, focus() { this.focused = true; }, set_auto_grow() {}, set_selected_range() {} });
 export const InputState = { new: state }, TextareaState = { new: state };
 export const Input = { new: () => el("input") }, Textarea = { new: () => el("textarea") };
@@ -557,6 +558,86 @@ await test("a section's checkbox stages its group and its title folds it", async
   assert.ok(!texts(panel.render(cx)).includes("app.ts"), "the tracked group is folded");
   clickRow(panel.render(cx), "section:tracked");
   assert.ok(texts(panel.render(cx)).includes("app.ts"), "and unfolded again");
+});
+
+// --- the keyboard ------------------------------------------------------------------
+
+const press = (key, keystroke = key) => byId(panel.render(cx), "git-changes").handlers.key_down({ key, keystroke }, cx);
+const highlighted = () => walk(panel.render(cx)).filter((n) => String(n.id).startsWith("in-") && n.props.border_color?.[0] === theme.accent).map((n) => n.id.slice(3));
+const shownItem = () => H.shared["git-changes.view"]?.sp1?.item ?? null;
+const theme = { accent: "#accent" };
+
+await test("↓ and ↑ select the row below and above: a file opens in the diff tab, a group or a folder only lights up", async () => {
+  H.currentProps = { folder: repo };
+  git("reset", "-q"); panel.refresh(cx); await settle();
+  panel.cursor = {}; H.shared["git-changes.view"] = {};
+  const rows = panel.rowsModel().rows, firstFile = rows.findIndex((r) => r.type === "file");
+  press("down");
+  assert.deepEqual(highlighted(), [rows[0].key], "from no selection, ↓ starts at the first row");
+  assert.equal(shownItem(), null, "a group opens nothing");
+  assert.equal(H.scrolledTo, 0, "the list scrolls to the row");
+  for (let i = 1; i < firstFile; i++) press("down");
+  assert.ok(rows[firstFile - 1].type === "folder" && shownItem() === null, "a folder opens nothing");
+  press("down");
+  assert.equal(shownItem()?.path, rows[firstFile].entry.path, "the file shows in the diff tab");
+  assert.deepEqual(highlighted(), [rows[firstFile].key]);
+  assert.equal(H.scrolledTo, firstFile);
+  press("up");
+  assert.deepEqual(highlighted(), [rows[firstFile - 1].key], "↑ goes back to the folder");
+  assert.equal(shownItem()?.path, rows[firstFile].entry.path, "and the diff tab keeps the file");
+  for (let i = 0; i < rows.length + 2; i++) press("up");
+  assert.deepEqual(highlighted(), [rows[0].key], "↑ stops at the first row");
+});
+
+await test("← folds the selected group or folder, → unfolds it, ↩ toggles it", async () => {
+  H.currentProps = { folder: repo };
+  panel.cursor = {}; H.shared["git-changes.view"] = {};
+  press("down"); press("down");
+  const folder = panel.rowsModel().byKey.get(highlighted()[0]);
+  assert.equal(folder.type, "folder");
+  press("right");
+  assert.ok(panel.rowsModel().byKey.get(folder.key).open, "→ on an open folder keeps it open");
+  press("left");
+  assert.ok(!panel.rowsModel().byKey.get(folder.key).open, "← folds it");
+  assert.deepEqual(highlighted(), [folder.key], "and keeps it selected");
+  press("right");
+  assert.ok(panel.rowsModel().byKey.get(folder.key).open, "→ unfolds it");
+  press("up"); press("enter");
+  assert.ok(!texts(panel.render(cx)).includes("app.ts"), "↩ on a group folds it");
+  press("enter");
+  assert.ok(texts(panel.render(cx)).includes("app.ts"), "and unfolds it");
+});
+
+await test("a click moves the keyboard's selection; keys do nothing while the message box has the keyboard", async () => {
+  H.currentProps = { folder: repo };
+  panel.cursor = {}; H.shared["git-changes.view"] = {};
+  clickRow(panel.render(cx), "folder:untracked:docs");
+  assert.deepEqual(highlighted(), ["folder:untracked:docs"], "a clicked folder is selected");
+  press("right"); press("down");
+  assert.equal(shownItem()?.path, "docs/usage.md", "↓ goes on from the clicked row");
+  press("up", "alt-up");
+  assert.deepEqual(highlighted(), ["file:docs/usage.md"], "an arrow with a modifier is left to Herdr");
+  panel.typing = true;
+  try {
+    press("up");
+    assert.deepEqual(highlighted(), ["file:docs/usage.md"], "the arrows stay in the message box");
+  } finally { panel.typing = false; }
+});
+
+await test("in History, ↓ and ↑ open the commit below and above", async () => {
+  H.currentProps = { folder: repo };
+  panel.cursor = {}; H.shared["git-changes.view"] = {};
+  panel.setTab("history", cx); await settle();
+  try {
+    const commits = panel.history.commits;
+    press("down");
+    assert.equal(shownItem()?.area, "all", "the uncommitted row shows every change");
+    press("down");
+    assert.equal(shownItem()?.hash, commits[1].hash, "the next row opens its commit");
+    assert.equal(H.scrolledTo, 1);
+    press("up");
+    assert.equal(shownItem()?.area, "all");
+  } finally { panel.setTab("changes", cx); await settle(); }
 });
 
 // --- opening a folder ------------------------------------------------------------------

@@ -195,7 +195,18 @@ hint in 11px `dim`. Danger items are `ansi1`.
     folder in a file manager.
 - **Keys.** ⌘↩ (or ctrl-↩) commits. ⌘C (or ctrl-shift-c) copies the hash of
   the commit the diff tab shows, except while the message box has the
-  keyboard. Esc leaves the message box. In menus: ↑/↓, ↩ or space, Esc. In two
+  keyboard. Esc leaves the message box. In the Changes, Repo and History
+  lists, while the message box doesn't have the keyboard: ↓/↑ select the row
+  below or above (a file, stash or commit opens in the diff tab at once; a
+  group or folder is only selected), ← folds and → unfolds the selected group
+  or folder, ↩ does what a click on the row does. The selection is the row last
+  clicked or reached by key, until the diff tab shows something else; then the
+  row it shows. Each list has a `VirtualListScrollHandle` that scrolls the
+  selected row on screen. Herdr sends keys to a docked mod only when
+  `mod.json` says `"focusable": true`; the panel then focuses its handle on a
+  left press and on the `"focus"` command. Opening or selecting the diff tab
+  takes the keyboard, so after a key opens a row the panel focuses its handle
+  again, at once and 150 ms later. In menus: ↑/↓, ↩ or space, Esc. In two
   columns, a sideways scroll (trackpad, or Shift+wheel) moves both columns'
   text together.
 - **The diff tab follows the files.** It watches the repository (local) or
