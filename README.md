@@ -44,8 +44,8 @@ picks its own Changes panel, so you point your layouts at this one
   it. The same filter applies in the Repo tab.
 - **On a file:** click it to show its diff in the main area. The button at the
   end of the row discards it (it turns red on hover and asks once more).
-  Right-click to stage, show the diff, **open its folder**, copy its path, or
-  discard it.
+  Right-click to stage, show the diff, **open it with** an application, **open
+  its folder**, copy its path, or discard it.
 - **On a folder (Tree):** click to fold it. Right-click to stage or unstage
   everything in it, **open the folder**, or copy its path.
 - **Open folder** shows the folder in your file manager (`xdg-open` on Linux,
@@ -53,6 +53,12 @@ picks its own Changes panel, so you point your layouts at this one
   terminal tab in it. The path is inside the focused terminal's repository, and
   a file in the repository's root opens the root. For a space on another
   machine, only the terminal tab is offered.
+- **Open with…** lists the applications that open the file's type, the default
+  one first, and opens the file with the one you pick. On Hyprland the window
+  opens floating. An application that is already open, such as VS Code, can
+  take the file into its open window, which stays as it is. It is on file rows of
+  the Changes and Repo tabs, on Linux and on this computer only, and it is off
+  for a deleted file.
 - **On a stash:** click to see its diff, new files included. The buttons at the
   end of the row Apply, Pop or Drop it.
 - **Arrow keys** (click the list first): ↓ and ↑ select the row below and
@@ -223,6 +229,13 @@ the repository it does three things:
   it holds more than 300 files. It works on this computer only.
 - *Open folder* starts `xdg-open`, `open` or `explorer` on the folder.
 - *Open in terminal* runs Herdr's `tab.new` for the folder.
+- *Open with…* runs `gio info` and `gio mime` for the file's type, reads the
+  applications' names from their `.desktop` files, and starts the one picked
+  with `gio launch`. On Hyprland it starts `gio launch` through `hyprctl
+  dispatch` with a `float` rule, so the window opens floating. An application
+  that detaches from its launch (VS Code does) escapes that rule, so for 10
+  seconds it reads `hyprctl -j clients` and floats the application's first new
+  window, matched by `StartupWMClass` when the `.desktop` file names one.
 - A comment on a line starts `claude --resume <session> --fork-session
   --session-id <id> -- <comment>` with `hc run --bg`, as a sub-agent of the
   session's terminal, and types replies into it with `hc send`. To find the
@@ -372,6 +385,7 @@ Herdr does. It clicks through:
   against the merge base;
 - History;
 - Open folder and Open in terminal;
+- Open with, with a stand-in `gio`;
 - image diffs: modified, added, deleted, in a commit and in a stash;
 - comment threads, with a stand-in `hc` and session files: the interactive
   fork started as a sub-agent, its answer read back, replies typed into it or

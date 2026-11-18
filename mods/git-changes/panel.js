@@ -16,6 +16,7 @@ import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, TextareaState, Textarea, InputState, Input, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import { spaces, panes, focused, exec, watchFolder, theme, settings, notify, shared, setShared, openOverlay, run, props, nextCommand, window as appWindow } from "herdr";
 import * as G from "./git.js";
+import * as Apps from "./apps.js";
 import { icon, menuHeight } from "./menu.js";
 import { showInTab, shownIn, shownSource, getLayout, setLayout } from "./diff.js";
 import { History } from "./history.js";
@@ -233,6 +234,7 @@ export class Panel {
     if (!space || !this.root) return;
     this.note = null;
     showInTab(space.id, item, { root: this.root, on: this.on ?? null });
+    this.keepKeyboard(cx);
     cx.notify();
   }
 
@@ -397,6 +399,7 @@ export class Panel {
     this.menu([
       { label: staged ? "Unstage" : e.conflict ? "Mark resolved" : "Stage", icon: staged ? "minus" : "plus", run: (cx) => this.act(cx, staged ? "Unstage" : "Stage", G.toggleArgs(e, this.hasHead)) },
       { label: "Show diff", icon: "diff", run: (cx) => this.pick(e, cx) },
+      this.openWithItem(e),
       { separator: true },
       ...this.folderItems(e.path.includes("/") ? e.path.slice(0, e.path.lastIndexOf("/")) : ""),
       { separator: true },
@@ -425,6 +428,34 @@ export class Panel {
       { label: "Open folder", icon: "folder", hint: local ? "" : "this computer only", disabled: !local, run: (cx) => this.openFolder(dir, cx) },
       { label: "Open in terminal", icon: "folder", run: () => this.openInTerminal(dir) },
     ];
+  }
+
+  openWithItem(e) {
+    const hint = this.on ? "this computer only" : appWindow().platform !== "linux" ? "Linux only" : "";
+    return { label: "Open with…", icon: "file", hint, disabled: Boolean(hint) || e.status === "D", run: (cx) => this.openWith(`${this.root}/${e.path}`, cx) };
+  }
+
+  openWith(file, cx) {
+    const context = this.context;
+    cx.spawn(async (cx) => {
+      try {
+        const apps = await Apps.applicationsFor(file);
+        if (this.context !== context) return;
+        if (!apps.length) return this.fail(cx, "No application opens this file");
+        this.menu(apps.map((app) => ({ label: app.name, icon: "file", hint: app.isDefault ? "default" : "", run: (cx) => this.launch(app, file, cx) })), cx);
+      } catch (e) {
+        if (this.context === context) this.fail(cx, `Open with failed: ${String(e?.message ?? e)}`);
+      }
+    });
+  }
+
+  launch(app, file, cx) {
+    const context = this.context;
+    cx.spawn(async (cx) => {
+      try { await Apps.launch(app, file, (ms) => cx.sleep(ms)); } catch (e) {
+        if (!isTimeout(e) && this.context === context) this.fail(cx, `Open with ${app.name} failed: ${String(e?.message ?? e)}`);
+      }
+    });
   }
 
   openFolder(dir, cx) {
@@ -595,7 +626,6 @@ export class Panel {
     if (!row) return;
     list.open(row, cx);
     this.remember(list, row.key);
-    this.keepKeyboard(cx);
     cx.notify();
   }
 
@@ -778,6 +808,7 @@ export class Panel {
     const folder = row.type === "file" ? row.dir : row.path;
     this.menu([
       row.type === "file" && { label: "Show diff", icon: "diff", run: (cx) => this.repoRowClicked(key, cx) },
+      row.type === "file" && this.openWithItem(row.entry),
       { separator: true },
       ...this.folderItems(folder),
       { separator: true },

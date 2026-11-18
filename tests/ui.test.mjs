@@ -72,6 +72,7 @@ export const Input = { new: () => el("input") }, Textarea = { new: () => el("tex
 export const spaces = () => { H.hostCalls++; return H.spaces; }, panes = () => H.panes, focused = () => H.focused, layout = () => ({});
 export const window = () => ({ platform: H.platform });
 export const appHome = () => H.appHome;
+export const home = () => H.home;
 export const theme = () => new Proxy({}, { get: (_t, k) => "#" + String(k).padEnd(6, "0").slice(0, 6) });
 export const settings = () => ({ zoom: 1, font_family: "Mono" });
 export const props = () => H.props();
@@ -95,13 +96,20 @@ const claudeHome = join(base, "claude-home");
 const env = { ...process.env, GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@t", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", CLAUDE_CONFIG_DIR: claudeHome };
 const tasks = [];
 const OPENERS = ["xdg-open", "open", "explorer"];
+const GIO = {
+  info: "uri: file:///x\nattributes:\n  standard::content-type: text/plain\n",
+  mime: "Default application for “text/plain”: editor.desktop\nRegistered applications:\n\tviewer.desktop\n\teditor.desktop\n\tmissing.desktop\nRecommended applications:\n\teditor.desktop\n",
+};
 const H = globalThis.__herdr = {
   spaces: [], panes: [], focused: null, shared: {}, runs: [], notes: [], overlays: [], currentProps: {},
-  calls: 0, hostCalls: 0, rendering: false, visibleRows: Infinity, platform: "linux", appHome: join(base, "app-home"), execs: [],
+  calls: 0, hostCalls: 0, rendering: false, visibleRows: Infinity, platform: "linux", appHome: join(base, "app-home"), home: join(base, "home"), execs: [],
   props: () => H.currentProps,
+  hyprctl: (args) => ({ code: 0, stdout: args[0] === "-j" ? "[]" : "ok\n", stderr: "" }),
   exec: async (cmd, args, { cwd } = {}) => {
     H.execs.push([cmd, args]);
     if (OPENERS.includes(cmd)) return { code: 0, stdout: "", stderr: "" };
+    if (cmd === "gio") return { code: 0, stdout: GIO[args[0]] ?? "", stderr: "" };
+    if (cmd === "hyprctl") return H.hyprctl(args);
     const r = spawnSync(cmd, args, { cwd, env, encoding: "utf8" });
     return { code: r.status, stdout: r.stdout, stderr: r.stderr };
   },
@@ -121,6 +129,7 @@ const cx = {
   spawn: (fn) => { const p = Promise.resolve().then(() => fn(cx)); tasks.push(p); return p; },
   timer: { every: (_ms, fn) => { timers.push(fn); }, after: () => {} },
   notify() { cx.count = (cx.count ?? 0) + 1; }, stop_propagation() {}, write_to_clipboard(t) { H.clipboard = t; }, focus_handle: () => ({ focus() {} }),
+  sleep: () => Promise.resolve(),
 };
 // Waits until git has answered: every task that can finish has. Folder watches never do, so each
 // task gets at most a short while, and settling stops once no new tasks appear.
@@ -624,6 +633,19 @@ await test("a click moves the keyboard's selection; keys do nothing while the me
   } finally { panel.typing = false; }
 });
 
+await test("a clicked file keeps the keyboard in the panel, though the diff tab takes it when it opens", async () => {
+  H.currentProps = { folder: repo };
+  panel.cursor = {}; H.shared["git-changes.view"] = {};
+  const handle = panel.handle;
+  let focused = 0;
+  panel.handle = { focus() { focused++; } };
+  try {
+    clickRow(panel.render(cx), "file:docs/usage.md");
+    assert.equal(shownItem()?.path, "docs/usage.md");
+    assert.ok(focused > 0, "the panel takes the keyboard back");
+  } finally { panel.handle = handle; }
+});
+
 await test("in History, ↓ and ↑ open the commit below and above", async () => {
   H.currentProps = { folder: repo };
   panel.cursor = {}; H.shared["git-changes.view"] = {};
@@ -769,6 +791,111 @@ await test("on another machine, Open folder is off but a terminal tab still open
   H.currentProps = { folder: repo };
   panel.refresh(cx); await settle();
 });
+
+// --- open with -------------------------------------------------------------------------
+
+const userApps = join(base, "home/.local/share/applications"), systemApps = join(base, "system/applications");
+mkdirSync(userApps, { recursive: true }); mkdirSync(systemApps, { recursive: true });
+writeFileSync(join(userApps, "editor.desktop"), "[Desktop Entry]\nName[de]=Bearbeiter\nName=Editor\n[Desktop Action new]\nName=New window\n");
+writeFileSync(join(systemApps, "viewer.desktop"), "[Desktop Entry]\nType=Application\nName=Viewer\n");
+writeFileSync(join(systemApps, "editor.desktop"), "[Desktop Entry]\nName=System editor\n");
+const savedXdg = { home: process.env.XDG_DATA_HOME, dirs: process.env.XDG_DATA_DIRS };
+delete process.env.XDG_DATA_HOME; process.env.XDG_DATA_DIRS = join(base, "system");
+
+await test("Open with lists the file type's applications, the default first, and opens the file with the one picked", async () => {
+  H.currentProps = { folder: repo };
+  panel.refresh(cx); await settle();
+  H.execs = [];
+  panel.fileMenu(panel.entries.find((e) => e.path === "src/app.ts"), cx);
+  chooseMenu(H.overlays.at(-1), "Open with…");
+  panel.render(cx); await settle();
+  const apps = H.overlays.at(-1).props.items;
+  assert.deepEqual(apps.map((i) => [i.label, i.hint]), [["Editor", "default"], ["Viewer", ""]]);
+  assert.deepEqual(H.execs.filter(([c]) => c === "gio").map(([, a]) => a), [["info", "-a", "standard::content-type", "--", join(repo, "src/app.ts")], ["mime", "text/plain"]]);
+  chooseMenu(H.overlays.at(-1), "Viewer");
+  panel.render(cx); await settle();
+  const command = `'gio' 'launch' '${join(systemApps, "viewer.desktop")}' '${join(repo, "src/app.ts")}'`;
+  assert.deepEqual(H.execs.find(([c, a]) => c === "hyprctl" && a[0] === "dispatch"), ["hyprctl", ["dispatch", `hl.dsp.exec_cmd("${command}", { float = true })`]]);
+});
+
+await test("without Hyprland's Lua dispatch the older one floats the window, and without Hyprland gio opens it", async () => {
+  const { launch, floatingLaunches } = await import(pathToFileURL(join(lib, "apps.js")).href);
+  const app = { path: "/apps/viewer.desktop", name: "Viewer", wmClass: null }, file = "/repo/it's \"odd\" $HOME.ts";
+  const dispatches = () => H.execs.filter(([c, a]) => c === "gio" || a[0] === "dispatch");
+  assert.deepEqual(floatingLaunches(`gio launch '${file}'`)[0][1], `hl.dsp.exec_cmd("gio launch '/repo/it's \\"odd\\" $HOME.ts'", { float = true })`);
+  const saved = H.hyprctl;
+  try {
+    H.hyprctl = (args) => ({ code: 0, stdout: args[0] === "-j" ? "[]" : args[1] === "exec" ? "ok" : "Invalid dispatcher", stderr: "" });
+    H.execs = [];
+    await launch(app, file, cx.sleep);
+    assert.deepEqual(dispatches().map(([c, a]) => [c, a[1]]), [["hyprctl", dispatches()[0][1][1]], ["hyprctl", "exec"]]);
+    assert.equal(dispatches()[1][1][2], `[float] 'gio' 'launch' '/apps/viewer.desktop' '/repo/it'\\''s "odd" $HOME.ts'`);
+    H.hyprctl = () => ({ code: 1, stdout: "", stderr: "HYPRLAND_INSTANCE_SIGNATURE not set" });
+    H.execs = [];
+    await launch(app, file, cx.sleep);
+    assert.deepEqual(dispatches(), [["gio", ["launch", app.path, file]]]);
+  } finally { H.hyprctl = saved; }
+});
+
+await test("an application that detaches from its launch, like VS Code, gets its new window floated; other windows stay as they are", async () => {
+  const { launch } = await import(pathToFileURL(join(lib, "apps.js")).href);
+  const app = { path: "/apps/code.desktop", name: "Visual Studio Code", wmClass: "com.microsoft.VSCode" };
+  const editor = { address: "0xb", class: "com.microsoft.VSCode", floating: false }, other = { address: "0xc", class: "chromium", floating: false };
+  const saved = H.hyprctl;
+  const run = async (opened) => {
+    let launched = false;
+    H.hyprctl = (args) => {
+      if (args[0] === "-j") return { code: 0, stdout: JSON.stringify([{ address: "0xa", class: "foot", floating: false }, ...(launched ? opened : [])]), stderr: "" };
+      launched = true;
+      return { code: 0, stdout: "ok", stderr: "" };
+    };
+    H.execs = [];
+    await launch(app, "/repo/README.md", cx.sleep);
+    return H.execs.filter(([, a]) => a[0] === "dispatch").slice(1).map(([, a]) => a[1]);
+  };
+  try {
+    assert.deepEqual(await run([other, editor]), ['hl.dsp.window.float({ action = "on", window = "address:0xb" })']);
+    assert.deepEqual(await run([{ ...editor, floating: true }]), [], "a window the launch rule floated is left alone");
+    assert.deepEqual(await run([other]), [], "a file handed to an open VS Code floats nothing");
+  } finally { H.hyprctl = saved; }
+});
+
+await test("Open with is off for a deleted file, on another machine and off Linux", async () => {
+  H.currentProps = { folder: repo };
+  panel.refresh(cx); await settle();
+  const openWith = () => H.overlays.at(-1).props.items.find((i) => i.label === "Open with…");
+  panel.fileMenu({ path: "gone.ts", staged: "none", status: "D" }, cx);
+  assert.equal(openWith().disabled, true);
+  H.platform = "macos";
+  try {
+    panel.fileMenu(panel.entries.find((e) => e.path === "src/app.ts"), cx);
+    assert.deepEqual([openWith().disabled, openWith().hint], [true, "Linux only"]);
+  } finally { H.platform = "linux"; }
+  H.currentProps = { folder: repo, on: "machine-a" };
+  panel.refresh(cx); await settle();
+  panel.fileMenu(panel.entries.find((e) => e.path === "src/app.ts"), cx);
+  assert.deepEqual([openWith().disabled, openWith().hint], [true, "this computer only"]);
+  H.currentProps = { folder: repo };
+  panel.refresh(cx); await settle();
+});
+
+await test("Open with says so when no application opens the file", async () => {
+  H.currentProps = { folder: repo };
+  panel.refresh(cx); await settle();
+  const savedMime = GIO.mime;
+  GIO.mime = "No default applications for “text/plain”\nNo registered applications\n";
+  try {
+    const menus = H.overlays.length;
+    panel.fileMenu(panel.entries.find((e) => e.path === "src/app.ts"), cx);
+    chooseMenu(H.overlays.at(-1), "Open with…");
+    panel.render(cx); await settle();
+    assert.equal(H.overlays.length, menus + 1, "no second menu opens");
+    assert.equal(panel.note, "No application opens this file");
+  } finally { GIO.mime = savedMime; panel.note = null; }
+});
+
+if (savedXdg.home === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = savedXdg.home;
+if (savedXdg.dirs === undefined) delete process.env.XDG_DATA_DIRS; else process.env.XDG_DATA_DIRS = savedXdg.dirs;
 
 // --- images ----------------------------------------------------------------------------
 
