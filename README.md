@@ -15,6 +15,38 @@ picks its own Changes panel, so you point your layouts at this one
 
 ![Git Changes: a commit picked in History shown in two columns in the main area; beside it the Changes panel as a folder tree, and the History tab with its commit graph](preview.png)
 
+## Features
+
+- **[Changes](#changes-tab):** staged, unstaged, untracked and conflicted
+  files, as a folder tree or a flat list, with a checkbox to stage each file,
+  folder or group. Discard a file, or trash an untracked one. Stage all,
+  unstage all, discard or trash everything from one menu.
+- **Filter files:** a box that keeps only the files whose path matches, in
+  the Changes and Repo tabs.
+- **[Repo](#repo-tab):** every file your branch changed since it left its
+  base branch (`main`, `develop`, `release/…`), as a merge request shows it.
+- **[Diff in the main area](#the-diff-in-the-main-area):** one column or two
+  (before | after), syntax colors for TypeScript, JavaScript, C# and HTML, and
+  images shown as pictures, before and after.
+- **[Comments on a line](#comments-on-a-line-answered-by-claude-code):** a
+  copy of your Claude Code session answers under the line, and you can reply.
+- **[Commit](#commit-area):** commit, commit tracked (`-a`), amend, signoff,
+  commit & push, uncommit, and a suggested message for a single file.
+- **[Remote](#commit-area):** one button that pulls, pushes, publishes or
+  fetches, whichever fits, plus pull (rebase) and force push with lease.
+- **Branches:** switch to a local branch from the branch row, or check out a
+  branch, a remote branch or a commit from History.
+- **Stashes:** stash all or only what's staged; apply, pop, drop and show the
+  diff of each stash.
+- **[History](#history-tab):** a commit graph with lanes, branch and tag
+  labels, all branches or the current one, revert and copy hash.
+- **On a file or folder:** open with an application of its type (Linux),
+  open the folder in your file manager or a terminal tab, copy the path.
+- **Keyboard:** ↑ ↓ move through every list, ← → fold, ↩ opens, ⌘↩ commits.
+- **[Safe](#safety):** destructive actions ask once more in place.
+- **Fast:** only the rows on screen are drawn, and it follows the repository
+  of the focused terminal, also on other machines.
+
 ## What it does
 
 ### Changes tab
