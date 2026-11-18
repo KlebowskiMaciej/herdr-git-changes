@@ -13,13 +13,13 @@
 // refresh are still its. Listens to herdr-git-graph's "git-graph.changed" so
 // both panels refresh after either acts.
 import { div, svg } from "gpui-kit";
-import { v_flex, h_flex, TextareaState, Textarea, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
+import { v_flex, h_flex, TextareaState, Textarea, InputState, Input, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import { spaces, panes, focused, exec, watchFolder, theme, settings, notify, shared, setShared, openOverlay, run, props, nextCommand, window as appWindow } from "herdr";
 import * as G from "./git.js";
 import { icon, menuHeight } from "./menu.js";
 import { showInTab, shownIn, shownSource, getLayout, setLayout } from "./diff.js";
 import { History } from "./history.js";
-import { ROW, OUTER, START, PAD, INDENT, BOX, ACTION, COUNT, COUNT_GAP, BRANCH, FOLDABLE, buildRows, buildBranchRows, filesInside, isFolded, stepIndex, zoneAt } from "./rows.js";
+import { ROW, OUTER, START, PAD, INDENT, BOX, ACTION, COUNT, COUNT_GAP, BRANCH, FOLDABLE, buildRows, buildBranchRows, filesInside, matchingPath, isFolded, stepIndex, zoneAt } from "./rows.js";
 
 // The focused terminal's folder, or `props.folder` when opened as a pane on one repository.
 function location() {
@@ -111,6 +111,11 @@ export class Panel {
     this.editor.on("submit", (e, cx) => { if (e.secondary) this.commit(cx, false); });
     this.editor.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
     this.editor.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
+    this.filter = "";
+    this.filterBox = InputState.new({ placeholder: "Filter files" });
+    this.filterBox.on("change", (_e, cx) => this.setFilter(this.filterBox.value(), cx));
+    this.filterBox.on("focus", (_e, cx) => { this.filtering = true; cx.notify(); });
+    this.filterBox.on("blur", (_e, cx) => { this.filtering = false; cx.notify(); });
     this.refresh(cx);
     cx.timer.every(10000, (cx) => this.refresh(cx));
     cx.spawn(async (cx) => { for (;;) { if (await nextCommand() === "focus") this.handle.focus(); cx.notify(); } });
@@ -201,14 +206,22 @@ export class Panel {
   shown() { return this.root ? shownIn(spaces().find((sp) => sp.active)?.id, this.root) : null; }
 
   rowsModel() {
-    if (!this.model) this.model = buildRows({ entries: this.entries, stashes: this.stashes, listMode: this.listMode, folded: this.folded, collapsed: this.collapsed });
+    if (!this.model) this.model = buildRows({ entries: matchingPath(this.entries, this.filter), stashes: this.stashes, listMode: this.listMode, folded: this.folded, collapsed: this.collapsed });
     return this.model;
   }
 
   repoRowsModel() {
-    if (!this.repoModel) this.repoModel = buildBranchRows({ entries: this.repo?.entries ?? [], listMode: this.listMode, folded: this.folded });
+    if (!this.repoModel) this.repoModel = buildBranchRows({ entries: matchingPath(this.repo?.entries ?? [], this.filter), listMode: this.listMode, folded: this.folded });
     return this.repoModel;
   }
+
+  setFilter(text, cx) {
+    if (text === this.filter) return;
+    this.filter = text; this.model = null; this.repoModel = null;
+    cx.notify();
+  }
+
+  clearFilter(cx) { this.filterBox.set_value(""); this.setFilter("", cx); }
 
   pickBranch(fields, cx) {
     this.pick({ ...fields, base: this.repo.mergeBase, head: this.repo.head, baseName: this.repo.base }, cx);
@@ -549,6 +562,9 @@ export class Panel {
 
   remember(list, key) { this.cursor[list.tab] = { key, shown: list.keyOf(this.shown()) }; }
 
+  /** None while the message box has the keyboard; only ↑ and ↓ while the filter has it, so ← → move its caret. */
+  listTakes(keystroke) { return !this.typing && (!this.filtering || keystroke in MOVES); }
+
   /** Handles ↑ ↓ (select the row above or below), ← → (fold or unfold a group or folder) and ↩ (open the row); false for any other key. */
   navigate(key, cx) {
     if (!(key in MOVES || key in FOLDS || key === "enter")) return false;
@@ -788,7 +804,19 @@ export class Panel {
     if (!this.repo) return notice("Loading the branch's changes…");
     if (this.repo.error) return notice(this.repo.error);
     if (!this.repo.entries.length) return notice(`No commits since ${this.repo.base}`);
+    if (!this.repoRowsModel().rows.length) return notice(this.noMatchText());
     return view.child(this.repoList(t, this.selectedKey(this.repoKeys(), shown)));
+  }
+
+  noMatchText() { return `No files match “${this.filter.trim()}”`; }
+
+  filterBar(t) {
+    return h_flex().id("filter").h(26).flex_none().mx(8).my(6).pl(8).pr(2).gap(6).items_center().rounded(6).border_1()
+      .border_color(this.filtering ? t.accent : t.border).bg(t.background).cursor_text()
+      .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); this.filterBox.focus(); })
+      .child(svg(icon("search")).size(12).flex_none().text_color(this.filtering ? t.accent : t.dim))
+      .child(Input.new(this.filterBox).flex_1().min_w(0).text_size(12).text_color(t.foreground))
+      .when(Boolean(this.filter), (e) => e.child(this.iconButton("clear-filter", "x", "Clear the filter · Esc", (cx) => this.clearFilter(cx), t, { size: 20 })));
   }
 
   emptyNotice(t) {
@@ -800,7 +828,9 @@ export class Panel {
   changesView(t, shown) {
     const list = v_flex().id("git-changes-list").flex_1().min_h(0);
     if (!this.root) return list.p(6).child(div().p(8).text_color(t.dim).child(this.error || (this.loading ? "Loading changes…" : "No folder")));
+    const unmatched = this.entries.length > 0 && !matchingPath(this.entries, this.filter).length;
     return list.when(this.entries.length === 0, (e) => e.child(this.emptyNotice(t)))
+      .when(unmatched, (e) => e.child(div().p(12).text_color(t.dim).child(this.noMatchText())))
       .when(this.rowsModel().rows.length > 0, (e) => e.child(this.fileList(t, this.selectedKey(this.changesKeys(), shown))));
   }
 
@@ -970,12 +1000,14 @@ export class Panel {
       .on_key_down((e, cx) => {
         if (e.keystroke === "cmd-enter" || e.keystroke === "ctrl-enter") { this.commit(cx, false); cx.stop_propagation(); }
         // ⌘C on the panel (not while typing) copies the selected commit's hash.
-        else if ((e.keystroke === "cmd-c" || e.keystroke === "ctrl-shift-c") && !this.typing && this.shown()?.area === "commit") { this.copyHash(this.shown(), cx); cx.stop_propagation(); }
+        else if ((e.keystroke === "cmd-c" || e.keystroke === "ctrl-shift-c") && !this.typing && !this.filtering && this.shown()?.area === "commit") { this.copyHash(this.shown(), cx); cx.stop_propagation(); }
         else if (e.key === "escape" && this.typing) { this.typing = false; this.handle.focus(); cx.stop_propagation(); cx.notify(); }
-        else if (!this.typing && this.navigate(e.keystroke, cx)) cx.stop_propagation();
+        else if (e.key === "escape" && this.filtering) { this.filtering = false; this.clearFilter(cx); this.handle.focus(); cx.stop_propagation(); }
+        else if (this.listTakes(e.keystroke) && this.navigate(e.keystroke, cx)) cx.stop_propagation();
       })
       .child(this.tabs(t))
       .when(Boolean(this.root), (e) => e.child(this.toolbar(t)))
+      .when(Boolean(this.root) && !history, (e) => e.child(this.filterBar(t)))
       .when(history, (e) => e.child(v_flex().flex_1().min_h(0).child(graph)))
       .when(repo, (e) => e.child(this.repoView(t, shown)))
       .when(!history && !repo, (e) => e.child(this.changesView(t, shown)))

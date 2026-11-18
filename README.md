@@ -37,6 +37,11 @@ picks its own Changes panel, so you point your layouts at this one
     staged, pop the latest stash, discard tracked changes, trash untracked
     files.
   - Stage All / Unstage All.
+- **Filter files**, the box under the toolbar: shows only the files whose path
+  holds what you type, ignoring case. The groups count only those files, and a
+  group's or folder's checkbox stages only them; Stage All still stages
+  everything. ↓ and ↑ move from the box into the list, Esc or the ✕ empties
+  it. The same filter applies in the Repo tab.
 - **On a file:** click it to show its diff in the main area. The button at the
   end of the row discards it (it turns red on hover and asks once more).
   Right-click to stage, show the diff, **open its folder**, copy its path, or
@@ -77,7 +82,8 @@ request shows it. Staged, unstaged and untracked work stays in Changes.
 - **Click a file** to see what the commits changed in it (merge base to
   HEAD) in the main area.
   View Diff shows all of them at once. Right-click a file or a folder to open
-  its folder or copy its path. The arrow keys work as in Changes.
+  its folder or copy its path. The arrow keys and the file filter work as in
+  Changes.
 - The toolbar shows the lines added and removed, and how many files changed
   since which base.
 - No checkboxes and no discard here: stage and discard in Changes.

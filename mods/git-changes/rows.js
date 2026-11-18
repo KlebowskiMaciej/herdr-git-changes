@@ -70,6 +70,12 @@ export function stepIndex(at, step, count) {
 /** The files a folder row stands for. */
 export const filesInside = (row) => row.list.filter((e) => e.path.startsWith(`${row.path}/`));
 
+/** The entries whose path holds `filter`, ignoring case; all of them for a blank filter. */
+export function matchingPath(entries, filter) {
+  const needle = filter.trim().toLowerCase();
+  return needle ? entries.filter((e) => e.path.toLowerCase().includes(needle)) : entries;
+}
+
 const leftOf = (row) => OUTER + BORDER + START + (row.depth ?? 0) * INDENT;
 const rightOf = (width) => width - OUTER - BORDER - PAD;
 const within = (x, from, size) => x >= from - SLOP && x <= from + size + SLOP;

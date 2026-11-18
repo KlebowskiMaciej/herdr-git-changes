@@ -1,6 +1,6 @@
 // Tests the list's row model, where a click lands in a row, and reading an image's
 // size from its own bytes. Nothing here needs Herdr or git. Run: node tests/rows.test.mjs
-import { buildRows, buildBranchRows, zoneAt, zoneCenter, filesInside, stepIndex, ACTION, BOX } from "../mods/git-changes/rows.js";
+import { buildRows, buildBranchRows, zoneAt, zoneCenter, filesInside, matchingPath, stepIndex, ACTION, BOX } from "../mods/git-changes/rows.js";
 import { imageSize, fitSize, formatBytes } from "../mods/git-changes/imageinfo.js";
 import { png, gif, jpeg, webpLossless, svgText } from "./fixtures.mjs";
 import assert from "node:assert/strict";
@@ -72,6 +72,14 @@ test("every row has its own key, and the keys find the rows", () => {
 
 test("no changes and no stashes: no rows", () => {
   assert.deepEqual(buildRows({ entries: [], stashes: [], listMode: "tree", folded: new Set(), collapsed: {} }).rows, []);
+});
+
+test("the filter keeps the files whose path holds its text, ignoring case and the spaces around it; a blank one keeps all", () => {
+  const entries = [file("src/ui/List.ts"), file("src/app.ts"), file("README.md")];
+  assert.deepEqual(matchingPath(entries, " ui/list ").map((e) => e.path), ["src/ui/List.ts"]);
+  assert.deepEqual(matchingPath(entries, "SRC").map((e) => e.path), ["src/ui/List.ts", "src/app.ts"]);
+  assert.deepEqual(matchingPath(entries, "nope"), []);
+  assert.equal(matchingPath(entries, "  "), entries);
 });
 
 // --- the arrow keys -----------------------------------------------------------------------

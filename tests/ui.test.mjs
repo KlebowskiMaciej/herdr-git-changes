@@ -637,7 +637,82 @@ await test("in History, ↓ and ↑ open the commit below and above", async () =
     assert.equal(H.scrolledTo, 1);
     press("up");
     assert.equal(shownItem()?.area, "all");
+    assert.ok(!byId(panel.render(cx), "filter"), "History has no file filter");
   } finally { panel.setTab("changes", cx); await settle(); }
+});
+
+// --- filtering the files ---------------------------------------------------------------
+
+const typeFilter = (text) => { panel.filterBox.set_value(text); panel.filterBox.handlers.change({}, cx); };
+const groupCounts = () => panel.rowsModel().rows.filter((r) => r.type === "section" && r.area !== "stash").map((r) => [r.area, r.count]);
+
+await test("the filter keeps only the files whose path holds the text, ignoring case", async () => {
+  H.currentProps = { folder: repo };
+  try {
+    typeFilter("UI/");
+    const all = texts(panel.render(cx));
+    assert.ok(all.includes("list.ts"), "the matching file");
+    assert.ok(!all.includes("app.ts") && !all.includes("usage.md"), "no other file");
+    assert.deepEqual(groupCounts(), [["tracked", 1]], "a group only for the matches, counting them");
+    typeFilter("nothing-like-this");
+    assert.ok(texts(panel.render(cx)).includes("No files match “nothing-like-this”"));
+    click(panel.render(cx), "clear-filter");
+    assert.equal(panel.filterBox.value(), "", "the box is empty");
+    assert.ok(texts(panel.render(cx)).includes("app.ts"), "every file is back");
+    assert.ok(!byId(panel.render(cx), "clear-filter"), "no clear button for an empty filter");
+  } finally { panel.clearFilter(cx); }
+});
+
+await test("with a filter, a group's checkbox stages only the files it shows", async () => {
+  H.currentProps = { folder: repo };
+  try {
+    typeFilter("app");
+    clickRow(panel.render(cx), "section:tracked", "stage");
+    await settle();
+    assert.deepEqual(git("diff", "--cached", "--name-only").trim().split("\n"), ["src/app.ts"]);
+  } finally { git("reset", "-q"); panel.clearFilter(cx); panel.refresh(cx); await settle(); }
+});
+
+await test("while the filter has the keyboard, ↓ and ↑ go through the matches, ← → stay in the box and Esc clears it", async () => {
+  H.currentProps = { folder: repo };
+  panel.cursor = {}; H.shared["git-changes.view"] = {};
+  typeFilter("src");
+  panel.filtering = true;
+  try {
+    press("down");
+    assert.deepEqual(highlighted(), ["section:tracked"], "↓ selects the first match's group");
+    press("left");
+    assert.ok(texts(panel.render(cx)).includes("app.ts"), "← leaves the group open");
+    for (let i = 0; i < panel.rowsModel().rows.length; i++) press("down");
+    assert.match(shownItem()?.path ?? "", /^src\//, "↓ opens a matching file");
+    press("escape");
+    assert.deepEqual([panel.filter, panel.filterBox.value(), panel.filtering], ["", "", false], "Esc empties the box and leaves it");
+    assert.ok(texts(panel.render(cx)).includes("usage.md"), "every file is back");
+  } finally { panel.filtering = false; panel.clearFilter(cx); }
+});
+
+await test("the filter works the same in Repo, and the toolbar still counts every file", async () => {
+  const filterRepo = join(base, "filter-repo"), fgit = (...a) => execFileSync("git", a, { cwd: filterRepo, env, encoding: "utf8" });
+  mkdirSync(join(filterRepo, "lib"), { recursive: true });
+  fgit("init", "-q", "-b", "main");
+  writeFileSync(join(filterRepo, "base.txt"), "one\n"); fgit("add", "."); fgit("commit", "-qm", "base");
+  fgit("switch", "-qc", "feature");
+  writeFileSync(join(filterRepo, "lib/done.ts"), "done\n"); writeFileSync(join(filterRepo, "notes.md"), "n\n"); fgit("add", "."); fgit("commit", "-qm", "work");
+  const savedProps = H.currentProps;
+  try {
+    H.currentProps = { folder: filterRepo };
+    click(panel.render(cx), "tab-repo");
+    await settle();
+    typeFilter("DONE");
+    const all = texts(panel.render(cx));
+    assert.ok(all.includes("done.ts") && !all.includes("notes.md"), "only the matching file");
+    assert.ok(all.includes("2 since main"), "the toolbar counts every file");
+    typeFilter("zzz");
+    assert.ok(texts(panel.render(cx)).includes("No files match “zzz”"));
+  } finally {
+    panel.clearFilter(cx); H.currentProps = savedProps;
+    panel.setTab("changes", cx); await settle();
+  }
 });
 
 // --- opening a folder ------------------------------------------------------------------
