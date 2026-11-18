@@ -460,8 +460,20 @@ shared state:
 
 ## Credits
 
-This mod reuses code from two projects and takes ideas from two more. Each
-file that holds borrowed code says so at its top.
+This repository continues another one, reuses code from two projects and takes
+ideas from two more. Each file that holds borrowed code says so at its top.
+
+**[herdr-git-changes](https://github.com/aBER0724/herdr-git-changes)** by
+aBER, MIT License. This is a copy of that repository, carried on here.
+
+- From it: the mod itself, as described below: the Changes tab with its
+  staging checkboxes, tree and flat lists, the commit area, stashes, the
+  remote button, History, the menus, and the diff tab in one or two columns.
+  David Clausen's fix there keeps a menu's actions on the repository it was
+  opened for.
+- Added here: image diffs, Open folder and Open in terminal, the list that
+  draws only the rows on screen, comments on a line answered by Claude Code,
+  the Repo tab, syntax colors, the arrow keys, the file filter and Open with.
 
 **[herdr-git-graph](https://github.com/rabeeh-ta/herdr-git-graph)** by
 Rabeeh T A, MIT License. The History tab is built on it:
@@ -493,7 +505,7 @@ Apache 2.0 text: [LICENSES/Apache-2.0.txt](LICENSES/Apache-2.0.txt).
 **[Lucide](https://lucide.dev)**, ISC License. The icons are Lucide's, as
 herdr-git-graph and Herdr draw them; `chevron-*.svg` come from Herdr's Files
 panel. `columns`, `diff`, `file`, `folder`, `history`, `list`, `list-tree`,
-`minus`, `rows`, `sliders`, `undo` and `x` were added here from Lucide. See
+`minus`, `rows`, `search`, `sliders`, `undo` and `x` were added here from Lucide. See
 [LICENSES/ISC-Lucide.txt](LICENSES/ISC-Lucide.txt).
 
 **[better-changes](https://github.com/munza/herdr-mods/tree/main/better-changes)**

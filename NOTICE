@@ -1,8 +1,10 @@
 Git Changes for Herdr
 Copyright (c) 2026 aBER
+Copyright (c) 2026 daniell0gda
 
-This software is MIT-licensed (see LICENSE). Parts of it come from other
-projects under their own licenses:
+This software is MIT-licensed (see LICENSE). It continues herdr-git-changes
+by aBER (https://github.com/aBER0724/herdr-git-changes), MIT License. Parts of
+it come from other projects under their own licenses:
 
 - mods/git-changes/lanes.js, and the parts of history.js, git.js and menu.js
   marked at their tops, are from herdr-git-graph
