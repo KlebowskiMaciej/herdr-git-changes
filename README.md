@@ -161,9 +161,9 @@ the next click.
 ### Comments on a line, answered by Claude Code
 
 - **Click a line** of the diff to write a comment under it. Under the pointer,
-  the line numbers of the line light up, as in GitLab, with a comment icon at
-  their start; a line with a thread
-  keeps its icon in the accent colour. Enter sends, Shift+Enter starts a new
+  the line numbers of the line light up, as in GitLab, with a new-comment icon
+  at their start; a line with a thread keeps a speech-bubble icon in the
+  accent colour. Enter sends, Shift+Enter starts a new
   line, Esc closes the box. In two columns, click the side you mean.
 - **A copy of your Claude Code session answers**, right under your comment.
   The comment starts an interactive fork of the session as its **sub-agent**
@@ -506,7 +506,7 @@ Apache 2.0 text: [LICENSES/Apache-2.0.txt](LICENSES/Apache-2.0.txt).
 **[Lucide](https://lucide.dev)**, ISC License. The icons are Lucide's, as
 herdr-git-graph and Herdr draw them; `chevron-*.svg` come from Herdr's Files
 panel. `columns`, `diff`, `file`, `folder`, `history`, `list`, `list-tree`,
-`minus`, `rows`, `search`, `sliders`, `undo` and `x` were added here from Lucide. See
+`message-square-plus`, `minus`, `rows`, `search`, `sliders`, `undo` and `x` were added here from Lucide. See
 [LICENSES/ISC-Lucide.txt](LICENSES/ISC-Lucide.txt).
 
 **[better-changes](https://github.com/munza/herdr-mods/tree/main/better-changes)**

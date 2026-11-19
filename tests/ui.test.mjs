@@ -1200,9 +1200,17 @@ await test("an answered thread ends with a Reply box that opens the reply under 
 });
 
 await test("every line has a comment icon, in the accent colour on a line with a thread", async () => {
-  const marks = walk(talk.render(cx)).filter((n) => n.kind === "svg" && n.props.path[0].endsWith("message-square.svg"));
+  const marks = walk(talk.render(cx)).filter((n) => n.kind === "svg" && /message-square(-plus)?\.svg$/.test(n.props.path[0]));
   assert.equal(marks.length, talk.rows.filter((r) => ["+", "-", " "].includes(r.kind)).length);
-  assert.equal(marks.filter((n) => n.props.text_color).length, 2, "TWO and zero have threads");
+  const threaded = marks.filter((n) => n.props.text_color);
+  assert.equal(threaded.length, 2, "TWO and zero have threads");
+  assert.ok(threaded.every((n) => n.props.path[0].endsWith("message-square.svg")), "a line with a thread shows a speech bubble");
+  assert.ok(marks.filter((n) => !n.props.text_color).every((n) => n.props.path[0].endsWith("message-square-plus.svg")), "a line without one offers a new comment");
+});
+
+await test("the comment icon is a direct child of the line, so the line's hover colour shows it", async () => {
+  const lines = walk(diffList(talk.render(cx))).filter((n) => n.props.hover);
+  assert.ok(lines.every((n) => n.kids[0].kind === "svg"));
 });
 
 await test("hovering anywhere on a line lights up only its line numbers, the text beside them keeps its colour", async () => {

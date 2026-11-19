@@ -388,6 +388,9 @@ hint in 11px `dim`. Danger items are `ansi1`.
 - **The comment icon shows on hover without a group-hover.** A line row's
   text colour is transparent and its hover style sets the accent; the icon has
   no colour of its own, so it inherits it. Every other cell sets its own colour.
+  The icon is a direct child of the line, as the panel's buttons hold theirs:
+  `message-square-plus` on a line without a thread, `message-square` in
+  `accent` on a line with one.
 - **Only the line numbers light up on hover, without a group-hover.** The hover
   sets the background of the whole line to `accent` at 20%. The text part of the
   line has an opaque `background` of its own, with the line's +/− tint on top,

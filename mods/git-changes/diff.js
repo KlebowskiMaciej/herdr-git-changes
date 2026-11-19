@@ -33,7 +33,7 @@ const TEXT_PAD = 4;
 const CARD_PAD = 10, CARD_PAD_Y = 6, CARD_BORDER = 1, ROW_PAD_Y = 4, BLOCK_GAP = 4, COMPOSE_INPUT = 60;
 const CARD_FRAME = 2 * (ROW_PAD_Y + CARD_PAD_Y + CARD_BORDER);
 const COMPOSE_HEIGHT = CARD_FRAME + COMPOSE_INPUT + BLOCK_GAP + LINE;
-const MENU_WIDTH = 200, MARK = 16, ANSWER_POLL_MS = 1500, SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], SPINNER_MS = 80;
+const MENU_WIDTH = 200, MARK = 18, MARK_ICON = 14, ANSWER_POLL_MS = 1500, SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], SPINNER_MS = 80;
 const mono = () => settings().font_family ?? "JetBrains Mono";
 
 const diffHeader = (path) => `diff --git a/${path} b/${path}`;
@@ -416,9 +416,10 @@ export class DiffView {
   }
 
   commentMark(line, t) {
-    const mark = div().w(MARK).h_full().flex_none().flex().items_center().justify_center();
-    if (!C.isLine(line)) return mark;
-    return mark.child(svg(icon("message-square")).size(11).when(Boolean(this.display?.placed.has(line)), (e) => e.text_color(t.accent)));
+    if (!C.isLine(line)) return div().w(MARK).flex_none();
+    const threaded = Boolean(this.display?.placed.has(line));
+    return svg(icon(threaded ? "message-square" : "message-square-plus")).size(MARK_ICON).mx((MARK - MARK_ICON) / 2).flex_none()
+      .when(threaded, (e) => e.text_color(t.accent));
   }
 
   commentable(element, line, t, id) {
