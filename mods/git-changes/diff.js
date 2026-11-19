@@ -29,6 +29,7 @@ const clip = (line) => (line.length > 4000 ? line.slice(0, 4000) + "… (line tr
 const ROW = 20, HEAD = 24;
 const MAX_IMAGES = 20, CAPTION = 22, CELL_PAD = 10, STATE_HEIGHT = 64, MANY_IMAGES_HEIGHT = 320, SPLIT_COLUMNS = 2;
 const THREAD_INDENT = 54, THREAD_MARGIN = 16, MIN_CARD = 240, CHAR_WIDTH = 7.25, LINE = 18;
+const TEXT_PAD = 4;
 const CARD_PAD = 10, CARD_PAD_Y = 6, CARD_BORDER = 1, ROW_PAD_Y = 4, BLOCK_GAP = 4, COMPOSE_INPUT = 60;
 const CARD_FRAME = 2 * (ROW_PAD_Y + CARD_PAD_Y + CARD_BORDER);
 const COMPOSE_HEIGHT = CARD_FRAME + COMPOSE_INPUT + BLOCK_GAP + LINE;
@@ -421,7 +422,13 @@ export class DiffView {
   }
 
   commentable(element, line, t) {
-    return element.when(C.isLine(line), (e) => e.text_color(t.background + "00").hover((s) => s.bg(t.hover).text_color(t.accent)));
+    return element.when(C.isLine(line), (e) => e.text_color(t.background + "00").hover((s) => s.bg(t.accent + "33").text_color(t.accent)));
+  }
+
+  /** The text part of a line. Its background is opaque, so the hover background of the line shows only in the line-number gutter. */
+  lineText(tint, t, ...cells) {
+    return h_flex().flex_1().min_w(0).h_full().bg(t.background)
+      .child(h_flex().size_full().min_w(0).pl(TEXT_PAD).gap(8).when(Boolean(tint), (e) => e.bg(tint)).children(cells));
   }
 
   unifiedRow(row, t) {
@@ -429,12 +436,14 @@ export class DiffView {
     if (kind === "f") return div().w_full().px(12).h(HEAD).flex_none().flex().items_center().truncate().bg(t.raised).border_t(1).border_color(t.border).font_semibold().text_color(t.foreground).child(text);
     if (kind === "@") return div().w_full().px(12).h(ROW).flex_none().truncate().bg(t.raised).text_color(t.dim).child(text);
     const color = kind === "+" ? t.ansi2 : kind === "-" ? t.ansi1 : t.foreground;
-    return this.commentable(h_flex().w_full().h(ROW).flex_none().gap(8).when(kind === "+" || kind === "-", (e) => e.bg(color + "18")), row, t)
+    const tint = kind === "+" || kind === "-" ? color + "18" : null;
+    return this.commentable(h_flex().w_full().h(ROW).flex_none().gap(8).when(Boolean(tint), (e) => e.bg(tint)), row, t)
       .child(this.commentMark(row, t))
       .child(div().w(38).flex_none().text_right().text_color(t.dim).child(kind === "-" ? String(number) : kind === " " ? String(old) : ""))
       .child(div().w(38).flex_none().text_right().text_color(t.dim).child(kind === "+" || kind === " " ? String(number) : ""))
-      .child(div().w(10).flex_none().text_color(color).child(kind === "+" || kind === "-" ? kind : ""))
-      .child(this.code(h_flex().flex_1().min_w(0).whitespace_nowrap(), row, kind === " " ? t.foreground : color, t));
+      .child(this.lineText(tint, t,
+        div().w(10).flex_none().text_color(color).child(kind === "+" || kind === "-" ? kind : ""),
+        this.code(h_flex().flex_1().min_w(0).whitespace_nowrap(), row, kind === " " ? t.foreground : color, t)));
   }
 
   code(element, row, plain, t) {
@@ -450,13 +459,14 @@ export class DiffView {
     const side = (entry, left) => {
       const kind = entry?.kind, color = kind === "+" ? t.ansi2 : kind === "-" ? t.ansi1 : t.foreground;
       const number = !entry ? "" : left ? String(kind === " " ? entry.old : entry.number) : String(entry.number);
+      const tint = !entry ? t.raised + "88" : kind === "+" || kind === "-" ? color + "18" : null;
       return this.commentable(h_flex().flex_1().min_w(0).h_full().gap(6).items_center().overflow_hidden()
         .when(!left, (e) => e.border_l(1).border_color(t.border))
-        .when(kind === "+" || kind === "-", (e) => e.bg(color + "18")).when(!entry, (e) => e.bg(t.raised + "88")), entry, t)
+        .when(Boolean(tint), (e) => e.bg(tint)), entry, t)
         .child(this.commentMark(entry, t))
         .child(div().w(38).flex_none().text_right().text_color(t.dim).child(number))
-        .child(div().flex_1().min_w(0).overflow_hidden()
-          .child(this.code(h_flex().w(this.width).flex_none().ml(-this.offset).whitespace_nowrap(), entry, kind === " " ? t.foreground : color, t)));
+        .child(this.lineText(tint, t, div().flex_1().min_w(0).overflow_hidden()
+          .child(this.code(h_flex().w(this.width).flex_none().ml(-this.offset).whitespace_nowrap(), entry, kind === " " ? t.foreground : color, t))));
     };
     return h_flex().w_full().h(ROW).flex_none().child(side(row.left, true)).child(side(row.right, false));
   }
@@ -640,7 +650,7 @@ export class DiffView {
     const body = div().id(`${this.listId}-body`).flex_1().min_h(0).relative().font_family(mono()).text_size(12)
       .on_size_change((size, cx) => this.measured(size, cx))
       .when(layout === "unified", (e) => e.child(div().id(`${this.listId}-x`).size_full().overflow_x_scrollbar()
-        .child(div().w_full().min_w(this.width + 110 + MARK).h_full().child(list))))
+        .child(div().w_full().min_w(this.width + 110 + MARK + TEXT_PAD).h_full().child(list))))
       // Split: one list for both columns keeps them level; sideways scrolling moves both texts.
       .when(layout === "split", (e) => e.child(div().id(`${this.listId}-split`).size_full()
         .on_mouse_down("left", (ev) => { this.pressSide = ev.local_position && ev.bounds && ev.local_position.x < ev.bounds.width / 2 ? "left" : "right"; })

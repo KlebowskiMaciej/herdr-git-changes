@@ -1205,6 +1205,19 @@ await test("every line has a comment icon, in the accent colour on a line with a
   assert.equal(marks.filter((n) => n.props.text_color).length, 2, "TWO and zero have threads");
 });
 
+await test("hovering anywhere on a line lights up only its line numbers, the text beside them keeps its colour", async () => {
+  for (const layout of ["unified", "split"]) {
+    H.shared["git-changes.layout"] = layout;
+    const lines = walk(diffList(talk.render(cx))).filter((n) => n.props.hover);
+    assert.ok(lines.length >= 3, `${layout}: every line reacts to the pointer`);
+    for (const line of lines) {
+      assert.equal(line.props.bg[0], "#accent33", `${layout}: the hover lights up the line's own background`);
+      assert.equal(line.kids.at(-1).props.bg?.[0], "#backgr", `${layout}: the text covers it with an opaque background of its own`);
+    }
+  }
+  H.shared["git-changes.layout"] = "unified";
+});
+
 await test("a long answer makes its thread taller, wrapped at the card's width", async () => {
   const { wrappedLines } = await import(pathToFileURL(join(lib, "comments.js")).href);
   assert.equal(wrappedLines("aaaaa bbbbb ccccc", 11), 2);

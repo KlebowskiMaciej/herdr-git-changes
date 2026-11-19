@@ -388,6 +388,10 @@ hint in 11px `dim`. Danger items are `ansi1`.
 - **The comment icon shows on hover without a group-hover.** A line row's
   text colour is transparent and its hover style sets the accent; the icon has
   no colour of its own, so it inherits it. Every other cell sets its own colour.
+- **Only the line numbers light up on hover, without a group-hover.** The hover
+  sets the background of the whole line to `accent` at 20%. The text part of the
+  line has an opaque `background` of its own, with the line's +/− tint on top,
+  so the hover shows only in the line-number gutter, as in GitLab.
 - **`line_height(18)` is 18 lines, not 18px.** A bare number is a multiplier.
   The thread text was pushed out of its card and only the labels showed. Pass
   `"18px"`.
@@ -454,8 +458,8 @@ hint in 11px `dim`. Danger items are `ansi1`.
 - Turning ☁ on or off adds or removes a remote-only branch's lane.
 - ⌘C, with a commit in the diff tab, puts its 40-character hash on the
   clipboard.
-- With Claude Code open in the repository: hover a line in the diff tab (it
-  lights up with a comment icon), click it, type a question, press Enter. A
+- With Claude Code open in the repository: hover a line in the diff tab (its
+  line numbers light up with a comment icon), click it, type a question, press Enter. A
   `review-…` sub-agent appears under that Claude Code terminal, a spinner
   shows under the comment, then a short answer. Right-click → Open session
   shows the copy's terminal. A reply in the thread is typed there and adds no

@@ -160,8 +160,9 @@ the next click.
 
 ### Comments on a line, answered by Claude Code
 
-- **Click a line** of the diff to write a comment under it. A line lights up
-  under the pointer, with a comment icon at its start; a line with a thread
+- **Click a line** of the diff to write a comment under it. Under the pointer,
+  the line numbers of the line light up, as in GitLab, with a comment icon at
+  their start; a line with a thread
   keeps its icon in the accent colour. Enter sends, Shift+Enter starts a new
   line, Esc closes the box. In two columns, click the side you mean.
 - **A copy of your Claude Code session answers**, right under your comment.
