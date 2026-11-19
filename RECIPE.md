@@ -392,6 +392,9 @@ hint in 11px `dim`. Danger items are `ansi1`.
   sets the background of the whole line to `accent` at 20%. The text part of the
   line has an opaque `background` of its own, with the line's +/− tint on top,
   so the hover shows only in the line-number gutter, as in GitLab.
+- **A hover style needs an `id`.** Without one, the hover moved only when the
+  list scrolled, not when the pointer moved. Each diff line takes its id from
+  its list key (`line-r12`, and `-left`/`-right` in two columns).
 - **`line_height(18)` is 18 lines, not 18px.** A bare number is a multiplier.
   The thread text was pushed out of its card and only the labels showed. Pass
   `"18px"`.

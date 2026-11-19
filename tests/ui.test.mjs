@@ -1210,6 +1210,8 @@ await test("hovering anywhere on a line lights up only its line numbers, the tex
     H.shared["git-changes.layout"] = layout;
     const lines = walk(diffList(talk.render(cx))).filter((n) => n.props.hover);
     assert.ok(lines.length >= 3, `${layout}: every line reacts to the pointer`);
+    const ids = lines.map((n) => n.id);
+    assert.ok(ids.every((id) => typeof id === "string") && new Set(ids).size === ids.length, `${layout}: each line has its own id, so its hover follows the pointer, not only a scroll`);
     for (const line of lines) {
       assert.equal(line.props.bg[0], "#accent33", `${layout}: the hover lights up the line's own background`);
       assert.equal(line.kids.at(-1).props.bg?.[0], "#backgr", `${layout}: the text covers it with an opaque background of its own`);
