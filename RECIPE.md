@@ -385,12 +385,12 @@ hint in 11px `dim`. Danger items are `ansi1`.
 - **A new folder asks for trust first.** Claude Code's "do you trust this
   folder" dialog makes the copy's terminal `blocked`; the thread says it waits
   for you. Folders where you already ran Claude Code don't ask.
-- **The comment icon shows on hover without a group-hover.** A line row's
-  text colour is transparent and its hover style sets the accent; the icon has
-  no colour of its own, so it inherits it. Every other cell sets its own colour.
-  The icon is a direct child of the line, as the panel's buttons hold theirs:
-  `message-square-plus` on a line without a thread, `message-square` in
-  `accent` on a line with one.
+- **A hover style never changes a child's colour.** A hover `text_color` on
+  the line didn't reach its icon, wrapped or not: the icon stayed invisible.
+  So a line without a thread holds a layer over the whole line (`absolute`,
+  `inset_0`) with the `message-square-plus` icon in `accent`, at `opacity(0)`
+  and `opacity(1)` on hover: the layer's own style, like a background. A line
+  with a thread shows `message-square` in `accent` all the time.
 - **Only the line numbers light up on hover, without a group-hover.** The hover
   sets the background of the whole line to `accent` at 20%. The text part of the
   line has an opaque `background` of its own, with the line's +/− tint on top,

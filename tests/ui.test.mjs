@@ -43,7 +43,7 @@ function el(kind) {
       if (k === "id") t.id = a[0];
       if (k.startsWith("on_") && H.rendering) throw new Error("a handler (" + k + ") inside a virtual list renderer");
       if (k.startsWith("on_")) t.handlers[k.slice(3) + (typeof a[0] === "string" && a.length > 1 ? ":" + a[0] : "")] = a.at(-1);
-      if (k === "hover") a[0](proxy);
+      if (k === "hover") { t.hoverStyle = el("hover"); a[0](t.hoverStyle); }
       t.props[k] = a;
       return proxy;
     };
@@ -1199,30 +1199,39 @@ await test("an answered thread ends with a Reply box that opens the reply under 
   talk.closeComposer();
 });
 
-await test("every line has a comment icon, in the accent colour on a line with a thread", async () => {
-  const marks = walk(talk.render(cx)).filter((n) => n.kind === "svg" && /message-square(-plus)?\.svg$/.test(n.props.path[0]));
-  assert.equal(marks.length, talk.rows.filter((r) => ["+", "-", " "].includes(r.kind)).length);
-  const threaded = marks.filter((n) => n.props.text_color);
-  assert.equal(threaded.length, 2, "TWO and zero have threads");
-  assert.ok(threaded.every((n) => n.props.path[0].endsWith("message-square.svg")), "a line with a thread shows a speech bubble");
-  assert.ok(marks.filter((n) => !n.props.text_color).every((n) => n.props.path[0].endsWith("message-square-plus.svg")), "a line without one offers a new comment");
+await test("every line has a comment icon: a speech bubble in the accent colour on a line with a thread, a new-comment icon on the others", async () => {
+  const icons = walk(diffList(talk.render(cx))).filter((n) => n.kind === "svg" && /message-square(-plus)?\.svg$/.test(n.props.path[0]));
+  assert.equal(icons.length, talk.rows.filter((r) => ["+", "-", " "].includes(r.kind)).length);
+  assert.ok(icons.every((n) => n.props.text_color?.[0] === "#accent"), "each icon has its own colour: a hover colour never reaches a child");
+  assert.equal(icons.filter((n) => n.props.path[0].endsWith("message-square.svg")).length, 2, "TWO and zero have threads");
 });
 
-await test("the comment icon is a direct child of the line, so the line's hover colour shows it", async () => {
-  const lines = walk(diffList(talk.render(cx))).filter((n) => n.props.hover);
-  assert.ok(lines.every((n) => n.kids[0].kind === "svg"));
+const lineRows = (tree) => walk(diffList(tree)).filter((n) => typeof n.id === "string" && n.id.startsWith("line-") && !n.id.endsWith("-new"));
+
+await test("on a line without a thread, the new-comment icon shows wherever the pointer is on the line", async () => {
+  for (const layout of ["unified", "split"]) {
+    H.shared["git-changes.layout"] = layout;
+    const open = lineRows(talk.render(cx)).filter((line) => !line.kids.some((k) => k.props?.path?.[0]?.endsWith("message-square.svg")));
+    assert.ok(open.length >= 1, `${layout}: some lines have no thread`);
+    for (const line of open) {
+      const layer = line.kids.find((k) => k.id === `${line.id}-new`);
+      assert.ok(layer, `${layout}: ${line.id} has a new-comment layer`);
+      assert.ok(layer.props.absolute && layer.props.inset_0, "the layer covers the whole line");
+      assert.deepEqual([layer.props.opacity, layer.hoverStyle.props.opacity], [[0], [1]], "the layer is invisible until the pointer is on it");
+    }
+  }
+  H.shared["git-changes.layout"] = "unified";
 });
 
 await test("hovering anywhere on a line lights up only its line numbers, the text beside them keeps its colour", async () => {
   for (const layout of ["unified", "split"]) {
     H.shared["git-changes.layout"] = layout;
-    const lines = walk(diffList(talk.render(cx))).filter((n) => n.props.hover);
+    const lines = lineRows(talk.render(cx));
     assert.ok(lines.length >= 3, `${layout}: every line reacts to the pointer`);
-    const ids = lines.map((n) => n.id);
-    assert.ok(ids.every((id) => typeof id === "string") && new Set(ids).size === ids.length, `${layout}: each line has its own id, so its hover follows the pointer, not only a scroll`);
+    assert.equal(new Set(lines.map((n) => n.id)).size, lines.length, `${layout}: each line has its own id, so its hover follows the pointer, not only a scroll`);
     for (const line of lines) {
-      assert.equal(line.props.bg[0], "#accent33", `${layout}: the hover lights up the line's own background`);
-      assert.equal(line.kids.at(-1).props.bg?.[0], "#backgr", `${layout}: the text covers it with an opaque background of its own`);
+      assert.equal(line.hoverStyle.props.bg[0], "#accent33", `${layout}: the hover lights up the line's own background`);
+      assert.ok(line.kids.some((k) => k.props?.bg?.[0] === "#backgr"), `${layout}: the text covers it with an opaque background of its own`);
     }
   }
   H.shared["git-changes.layout"] = "unified";

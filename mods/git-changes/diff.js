@@ -415,15 +415,22 @@ export class DiffView {
         .child(div().child(this.loading ? "Loading…" : "")));
   }
 
+  hasThread(line) { return Boolean(this.display?.placed.has(line)); }
+
+  markIcon(name, t) { return svg(icon(name)).size(MARK_ICON).mx((MARK - MARK_ICON) / 2).flex_none().text_color(t.accent); }
+
   commentMark(line, t) {
-    if (!C.isLine(line)) return div().w(MARK).flex_none();
-    const threaded = Boolean(this.display?.placed.has(line));
-    return svg(icon(threaded ? "message-square" : "message-square-plus")).size(MARK_ICON).mx((MARK - MARK_ICON) / 2).flex_none()
-      .when(threaded, (e) => e.text_color(t.accent));
+    return C.isLine(line) && this.hasThread(line) ? this.markIcon("message-square", t) : div().w(MARK).flex_none();
+  }
+
+  /** A layer over the whole line that shows the new-comment icon only while the pointer is on the line: a hover style changes only its own element, never a child's colour. */
+  newCommentLayer(id, t) {
+    return h_flex().id(`${id}-new`).absolute().inset_0().opacity(0).hover((s) => s.opacity(1)).child(this.markIcon("message-square-plus", t));
   }
 
   commentable(element, line, t, id) {
-    return element.when(C.isLine(line), (e) => e.id(id).text_color(t.background + "00").hover((s) => s.bg(t.accent + "33").text_color(t.accent)));
+    return element.when(C.isLine(line), (e) => e.id(id).relative().hover((s) => s.bg(t.accent + "33"))
+      .when(!this.hasThread(line), (e) => e.child(this.newCommentLayer(id, t))));
   }
 
   /** The text part of a line. Its background is opaque, so the hover background of the line shows only in the line-number gutter. */
