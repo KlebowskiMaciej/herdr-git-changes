@@ -24,6 +24,7 @@ import { previewImage, pruneCache } from "./images.js";
 import { fitSize, formatBytes } from "./imageinfo.js";
 import { highlightRows, syntaxColors, Token } from "./syntax.js";
 import { loadMarkdown } from "./markdown.js";
+import { splitMermaid, drawDiagram, diagramKey, isDarkColor, Part } from "./mermaid.js";
 
 const MAX = 5000;
 const clip = (line) => (line.length > 4000 ? line.slice(0, 4000) + "… (line truncated)" : line);
@@ -31,6 +32,7 @@ const ROW = 20, HEAD = 24;
 const MAX_IMAGES = 20, CAPTION = 22, CELL_PAD = 10, STATE_HEIGHT = 64, MANY_IMAGES_HEIGHT = 320, SPLIT_COLUMNS = 2;
 const THREAD_INDENT = 54, THREAD_MARGIN = 16, MIN_CARD = 240, CHAR_WIDTH = 7.25, LINE = 18;
 const TEXT_PAD = 4;
+const MARKDOWN_PAD = 16, MARKDOWN_GAP = 12, MIN_DIAGRAM = 120, MAX_DIAGRAM_HEIGHT = 4000;
 const CARD_PAD = 10, CARD_PAD_Y = 6, CARD_BORDER = 1, ROW_PAD_Y = 4, BLOCK_GAP = 4, COMPOSE_INPUT = 60;
 const CARD_FRAME = 2 * (ROW_PAD_Y + CARD_PAD_Y + CARD_BORDER);
 const COMPOSE_HEIGHT = CARD_FRAME + COMPOSE_INPUT + BLOCK_GAP + LINE;
@@ -129,7 +131,7 @@ export class DiffView {
 
   clearRows() {
     this.rows = []; this.pairs = null; this.signature = null; this.heights = null;
-    this.imageRows = []; this.added = 0; this.removed = 0; this.markdown = null;
+    this.imageRows = []; this.added = 0; this.removed = 0; this.markdown = null; this.diagrams = new Map();
   }
 
   // Record this tab's id the first time it's seen, so the panel reuses it:
@@ -651,21 +653,51 @@ export class DiffView {
     const zoom = settings().zoom ?? 1, width = Math.round(size.width / zoom), height = Math.round(size.height / zoom);
     if (width === this.bodyWidth && height === this.bodyHeight) return;
     this.bodyWidth = width; this.bodyHeight = height; this.imageVersion++;
-    if (this.imageRows.length || this.comments.length || this.target) cx.notify();
+    if (this.imageRows.length || this.comments.length || this.target || this.previewing) cx.notify();
   }
 
-  markdownColumn(text, side, t) {
-    const column = v_flex().flex_1().min_w(0).h_full();
-    if (text === null) return column.p(16).text_color(t.dim).child(this.markdown ? "Not in this version" : "Loading preview…");
-    return column.child(TextView.markdown(`${this.listId}-md-${side}`, text).selectable().scrollable().size_full().p(16));
+  requestDiagram(source, dark, key, cx) {
+    this.diagrams.set(key, null);
+    cx.spawn(async (cx) => {
+      const drawn = await drawDiagram(source, dark);
+      if (this.diagrams.has(key)) { this.diagrams.set(key, drawn); cx.notify(); }
+    });
   }
 
-  /** The file rendered as Markdown: its new version in one column, before | after in two; a deleted file shows its old version. */
-  markdownBody(t, layout) {
+  diagramView(source, id, { t, width, cx }) {
+    const dark = isDarkColor(t.background), key = diagramKey(source, dark);
+    if (!this.diagrams.has(key)) this.requestDiagram(source, dark, key, cx);
+    const drawn = this.diagrams.get(key);
+    if (!drawn) return div().text_color(t.dim).child("Drawing diagram…");
+    if (drawn.error) return v_flex().gap(4)
+      .child(div().text_color(t.ansi1).child(drawn.error))
+      .child(TextView.markdown(id, `\`\`\`mermaid\n${source}\n\`\`\``).selectable().w_full());
+    const box = fitSize(drawn.size, Math.max(MIN_DIAGRAM, width), MAX_DIAGRAM_HEIGHT);
+    return div().flex_none().w(box.width).h(box.height).child(image(drawn.src).w(box.width).h(box.height));
+  }
+
+  markdownPart(part, id, context) {
+    if (part.kind === Part.Mermaid) return this.diagramView(part.source, id, context);
+    return TextView.markdown(id, part.text).selectable().w_full();
+  }
+
+  markdownColumn(text, side, context) {
+    const column = v_flex().flex_1().min_w(0).h_full(), id = `${this.listId}-md-${side}`;
+    if (text === null) return column.p(MARKDOWN_PAD).text_color(context.t.dim).child(this.markdown ? "Not in this version" : "Loading preview…");
+    const parts = splitMermaid(text);
+    if (!parts.some((part) => part.kind === Part.Mermaid)) return column.child(TextView.markdown(id, text).selectable().scrollable().size_full().p(MARKDOWN_PAD));
+    return column.child(v_flex().id(id).size_full().p(MARKDOWN_PAD).gap(MARKDOWN_GAP).overflow_y_scrollbar()
+      .children(parts.map((part, i) => this.markdownPart(part, `${id}-${i}`, context))));
+  }
+
+  /** The file rendered as Markdown, its Mermaid diagrams drawn: its new version in one column, before | after in two; a deleted file shows its old version. */
+  markdownBody(t, layout, cx) {
     const { before, after } = this.markdown ?? { before: null, after: null };
     const columns = layout === "split" ? [["before", before], ["after", after]] : [[after === null ? "before" : "after", after ?? before]];
-    return h_flex().flex_1().min_h(0).children(columns.map(([side, text], i) =>
-      this.markdownColumn(text, side, t).when(i > 0, (e) => e.border_l(1).border_color(t.border))));
+    const width = Math.floor((this.bodyWidth || 600) / columns.length) - 2 * MARKDOWN_PAD;
+    return h_flex().id(`${this.listId}-preview`).flex_1().min_h(0).on_size_change((size, cx) => this.measured(size, cx))
+      .children(columns.map(([side, text], i) =>
+        this.markdownColumn(text, side, { t, width, cx }).when(i > 0, (e) => e.border_l(1).border_color(t.border))));
   }
 
   diffBody(t, layout) {
@@ -708,7 +740,7 @@ export class DiffView {
       .when(layout === "split", (e) => e.child(h_flex().h(22).flex_none().items_center().border_b(1).border_color(t.border).text_size(11).text_color(t.muted)
         .child(div().flex_1().px(12).child("Before")).child(div().flex_1().px(12).border_l(1).border_color(t.border).child("After"))))
       .when(Boolean(this.error), (e) => e.child(div().px(12).py(8).text_color(t.ansi1).child(this.error)))
-      .child(previewing ? this.markdownBody(t, layout) : this.diffBody(t, layout));
+      .child(previewing ? this.markdownBody(t, layout, cx) : this.diffBody(t, layout));
   }
 }
 

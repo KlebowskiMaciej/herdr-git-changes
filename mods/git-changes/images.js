@@ -3,7 +3,7 @@ import { exists, mkdir, readFile, readdir, unlink } from "fs/promises";
 import * as G from "./git.js";
 import { imageSize, formatBytes } from "./imageinfo.js";
 
-const CACHE = "data/git-changes/preview";
+export const CACHE = "data/git-changes/preview";
 const MAX_BYTES = 10 * 1024 * 1024;
 const KEPT_FILES = 300;
 const BLOB_ID = /^[0-9a-f]{40,64}$/;
@@ -11,7 +11,7 @@ const COPY_BLOB = 'git cat-file blob "$1" > "$2.part" && mv -- "$2.part" "$2"';
 const COPY_FILE = 'cp -- "$1" "$2.part" && mv -- "$2.part" "$2"';
 
 const inFlight = new Map();
-const cacheFolder = () => `${appHome()}/${CACHE}`;
+export const cacheFolder = () => `${appHome()}/${CACHE}`;
 const shell = (script, args, cwd) => exec("sh", ["-c", script, "sh", ...args], { cwd });
 const git = (args, cwd) => exec("git", [...G.READ, ...args], { cwd });
 

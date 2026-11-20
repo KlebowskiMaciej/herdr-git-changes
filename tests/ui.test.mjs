@@ -24,7 +24,7 @@ for (const f of readdirSync(modDir).filter((f) => f.endsWith(".js")))
 writeFileSync(join(lib, "_fs.js"), `
 import * as fs from "node:fs/promises";
 export const exists = (p) => fs.access(p).then(() => true, () => false);
-export const { mkdir, readFile, readdir, unlink } = fs;
+export const { mkdir, readFile, readdir, unlink, writeFile } = fs;
 `);
 writeFileSync(join(lib, "_stub.js"), `
 const H = globalThis.__herdr;
@@ -1044,6 +1044,62 @@ await test("other files and whole-commit diffs have no preview switch", async ()
   assert.equal(byId(code.render(cx), "gc-diff-preview"), undefined);
   const all = await openDiff({ area: "all" }, docsRepo);
   assert.equal(byId(all.render(cx), "gc-diff-preview"), undefined);
+});
+
+const M = await import(pathToFileURL(join(lib, "mermaid.js")).href);
+const mermaidCalls = [];
+const withMermaid = async (answer, fn) => {
+  const real = H.exec;
+  H.exec = async (cmd, args, opts) => (cmd === "mmdc" ? (mermaidCalls.push(args), answer(args)) : real(cmd, args, opts));
+  try { await fn(); } finally { H.exec = real; }
+};
+const drawPicture = (args) => { writeFileSync(args[args.indexOf("-o") + 1], png(40, 20, [1, 2, 3])); return { code: 0, stdout: "", stderr: "" }; };
+const previewWithDiagram = async (name, source) => {
+  writeFileSync(join(docsRepo, name), `# Flow\n\n\`\`\`mermaid\n${source}\n\`\`\`\n\nAfter\n`);
+  const view = await preview({ area: "file", path: name, untracked: true, status: "A", staged: "none" });
+  view.render(cx); await settle();
+  return view.render(cx);
+};
+
+await test("mermaid blocks are cut out of the markdown, but not from inside another fence", async () => {
+  const text = ["# T", "```mermaid", "graph TD", "```", "mid", "````md", "```mermaid", "x", "```", "````", "~~~ Mermaid", "pie", "~~~", "```mermaid", "open"].join("\n");
+  assert.deepEqual(M.splitMermaid(text), [
+    { kind: M.Part.Markdown, text: "# T" },
+    { kind: M.Part.Mermaid, source: "graph TD" },
+    { kind: M.Part.Markdown, text: "mid\n````md\n```mermaid\nx\n```\n````" },
+    { kind: M.Part.Mermaid, source: "pie" },
+    { kind: M.Part.Mermaid, source: "open" },
+  ]);
+  assert.deepEqual(M.splitMermaid("plain\n"), [{ kind: M.Part.Markdown, text: "plain\n" }]);
+  assert.equal(M.isDarkColor("#1e1e2e"), true); assert.equal(M.isDarkColor("#fafafa"), false); assert.equal(M.isDarkColor("teal"), false);
+});
+
+await test("the preview draws a mermaid diagram as a picture between the markdown around it, once", async () => {
+  mermaidCalls.length = 0;
+  await withMermaid(drawPicture, async () => {
+    const tree = await previewWithDiagram("flow.md", "graph TD\n  A --> B");
+    assert.deepEqual(markdownShown(tree), ["# Flow\n", "\nAfter\n"]);
+    const [src] = pictures(tree);
+    assert.match(src, /^data\/git-changes\/preview\/mermaid-[0-9a-f]{32}\.png$/);
+    assert.ok(readFileSync(join(H.appHome, src)).length > 0, "the picture is under the app's folder");
+    assert.deepEqual(walk(tree).find((n) => n.kind === "image").props.w, [20], "shown at half its pixels: drawn at twice the size");
+    assert.equal(mermaidCalls.length, 1);
+    assert.deepEqual(mermaidCalls[0].slice(-4), ["-b", "transparent", "-s", "2"]);
+    await previewWithDiagram("flow.md", "graph TD\n  A --> B");
+    assert.equal(mermaidCalls.length, 1, "the same diagram again comes from the cache");
+  });
+});
+
+await test("a diagram mermaid can't draw shows why, with its source", async () => {
+  await withMermaid(() => ({ code: 1, stdout: "", stderr: "\nError: Parse error on line 2:\n...\n" }), async () => {
+    const tree = await previewWithDiagram("broken.md", "graph TD\n  A -->");
+    assert.ok(texts(tree).includes("Error: Parse error on line 2:"));
+    assert.ok(markdownShown(tree).includes("```mermaid\ngraph TD\n  A -->\n```"));
+    assert.deepEqual(pictures(tree), []);
+  });
+  await withMermaid(() => ({ code: 127, stdout: "", stderr: "" }), async () => {
+    assert.ok(texts(await previewWithDiagram("missing.md", "pie\n  \"a\": 1")).includes(M.INSTALL_HINT));
+  });
 });
 
 // --- comment threads ------------------------------------------------------------

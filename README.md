@@ -28,7 +28,7 @@ picks its own Changes panel, so you point your layouts at this one
 - **[Diff in the main area](#the-diff-in-the-main-area):** one column or two
   (before | after), syntax colors for TypeScript, JavaScript, C# and HTML,
   images shown as pictures, before and after, and a rendered preview of a
-  Markdown file.
+  Markdown file, with its Mermaid diagrams drawn.
 - **[Comments on a line](#comments-on-a-line-answered-by-claude-code):** a
   copy of your Claude Code session answers under the line, and you can reply.
 - **[Commit](#commit-area):** commit, commit tracked (`-a`), amend, signoff,
@@ -161,6 +161,12 @@ the next click.
   new version in one column, *Before* and *After* side by side in two columns.
   A deleted file shows its old version. The choice stays for the next file the
   tab shows.
+- **Mermaid diagrams** in a Markdown file (a ` ```mermaid ` or `~~~mermaid`
+  block) show as pictures in the preview, drawn by the
+  [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli) in the terminal
+  theme's light or dark look. A diagram with an error shows the error and its
+  source. Without the CLI, each diagram shows its source and how to install it:
+  `npm install -g @mermaid-js/mermaid-cli`.
 - The tab follows the files: saving a shown file refreshes it.
 - The row the tab shows is highlighted in the panel.
 
@@ -266,6 +272,10 @@ the repository it does three things:
   `sh -c` script for the copy (`git cat-file` or `cp`, then `mv`) with the paths
   as separate arguments, and `wc` to check the size. The folder is emptied when
   it holds more than 300 files. It works on this computer only.
+- To draw a Mermaid diagram, it writes the diagram's text to the same folder
+  and runs `mmdc` on it (the Mermaid CLI, which starts a headless Chromium). The
+  PNG stays there, named by content; the text file is removed. It runs on this
+  computer, also for a space on another machine.
 - *Open folder* starts `xdg-open`, `open` or `explorer` on the folder.
 - *Open in terminal* runs Herdr's `tab.new` for the folder.
 - *Open with…* runs `gio info` and `gio mime` for the file's type, reads the
@@ -372,6 +382,9 @@ herdr-app do tab.new '{"name":"History","mod":"git-changes","props":{"folder":"/
 - Renames show as a delete and an add (status runs with `--no-renames`).
 - At most 1,000 changed files are listed. A diff shows up to 5,000 lines; an
   untracked file shows its first 3,000 lines.
+- Mermaid diagrams need `mmdc` on the `PATH` Herdr starts with. The first
+  draw of a diagram takes a second or two; diagrams are drawn one at a time.
+  After you install `mmdc`, pick the file again.
 - Image previews need `sh` and `git` (not Windows without them), skip images over
   10 MB, show the first 20 images of a diff, and don't work for another machine.
   An image Herdr can't decode shows as an empty box.
@@ -428,6 +441,8 @@ Herdr does. It clicks through:
 - image diffs: modified, added, deleted, in a commit and in a stash;
 - the Markdown preview: one and two columns, an untracked file, a Repo file,
   and no switch on other files;
+- Mermaid diagrams, with a stand-in `mmdc`: finding the blocks, the drawn
+  picture and its cache, a diagram with an error, and no `mmdc`;
 - comment threads, with a stand-in `hc` and session files: the interactive
   fork started as a sub-agent, its answer read back, replies typed into it or
   reopening it, a second thread that skips the copies, waiting for permission
@@ -457,6 +472,7 @@ Files in `mods/git-changes/`:
 | `lanes.js` | Lays commits out on lanes (from herdr-git-graph, unchanged). |
 | `diff.js` | Loading diffs, the one diff tab per space, its one- and two-column views, its image rows, its Markdown preview and its comment threads. |
 | `markdown.js` | Reads a Markdown file's text before and after its change, for the preview. |
+| `mermaid.js` | Finds the Mermaid blocks in Markdown and draws each with the Mermaid CLI. |
 | `comments.js` | Comment threads: pinning a comment to its line, saving them in the git folder, and asking a fork of the Claude Code session. |
 | `syntax.js` | Syntax colors: a file's language from its extension, and each diff line split into colored tokens. No Herdr imports. |
 | `menu.js` | The dropdown and right-click menus, shown as popups. |
