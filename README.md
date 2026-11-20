@@ -26,9 +26,14 @@ picks its own Changes panel, so you point your layouts at this one
 - **[Repo](#repo-tab):** every file your branch changed since it left its
   base branch (`main`, `develop`, `release/…`), as a merge request shows it.
 - **[Diff in the main area](#the-diff-in-the-main-area):** one column or two
-  (before | after), syntax colors for TypeScript, JavaScript, C# and HTML,
-  images shown as pictures, before and after, and a rendered preview of a
-  Markdown file, with its Mermaid diagrams drawn.
+  (before | after), syntax colors for TypeScript, JavaScript, C# and HTML, and
+  images shown as pictures, before and after.
+- **[Markdown preview](#the-diff-in-the-main-area):** a Changes | Preview
+  switch on a Markdown file's diff shows the file rendered, the new version or
+  before | after.
+- **[Mermaid diagrams](#the-diff-in-the-main-area):** ` ```mermaid ` blocks in
+  the preview show as pictures, drawn by the Mermaid CLI in the theme's light
+  or dark look.
 - **[Comments on a line](#comments-on-a-line-answered-by-claude-code):** a
   copy of your Claude Code session answers under the line, and you can reply.
 - **[Commit](#commit-area):** commit, commit tracked (`-a`), amend, signoff,
@@ -499,7 +504,8 @@ aBER, MIT License. This is a copy of that repository, carried on here.
   opened for.
 - Added here: image diffs, Open folder and Open in terminal, the list that
   draws only the rows on screen, comments on a line answered by Claude Code,
-  the Repo tab, syntax colors, the arrow keys, the file filter and Open with.
+  the Repo tab, syntax colors, the arrow keys, the file filter, Open with, and
+  the Markdown preview with its Mermaid diagrams.
 
 **[herdr-git-graph](https://github.com/rabeeh-ta/herdr-git-graph)** by
 Rabeeh T A, MIT License. The History tab is built on it:
