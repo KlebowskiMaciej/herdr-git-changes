@@ -15,7 +15,7 @@
 // replacements pair by position inside one block, never across a hunk or a
 // context line. That code isn't used here; git.js has its own splitRows().
 import { div, svg, image } from "gpui-kit";
-import { v_flex, h_flex, Scrollbar, v_virtual_list, TextareaState, Textarea } from "gpui-base";
+import { v_flex, h_flex, Scrollbar, v_virtual_list, TextareaState, Textarea, TextView } from "gpui-base";
 import { exec, readTextFile, watchFolder, theme, settings, props, shared, setShared, spaces, panes, run, notify, openOverlay, terminals } from "herdr";
 import * as G from "./git.js";
 import * as C from "./comments.js";
@@ -23,6 +23,7 @@ import { icon, menuHeight } from "./menu.js";
 import { previewImage, pruneCache } from "./images.js";
 import { fitSize, formatBytes } from "./imageinfo.js";
 import { highlightRows, syntaxColors, Token } from "./syntax.js";
+import { loadMarkdown } from "./markdown.js";
 
 const MAX = 5000;
 const clip = (line) => (line.length > 4000 ? line.slice(0, 4000) + "… (line truncated)" : line);
@@ -58,6 +59,7 @@ async function untrackedLines(root, on, path) {
 const showsUntracked = (item) => item.area === "all";
 const isSingleFile = (item) => item.area === "file" || item.area === "base-file";
 const isBase = (item) => item.area === "base" || item.area === "base-file";
+const isMarkdownFile = (item) => isSingleFile(item) && G.isMarkdown(item.path);
 
 // The diff's lines, ready for G.diffRows. `untracked` lists the untracked paths an "all" diff shows too.
 export async function loadDiff(item, { root, on, hasHead, untracked = [] }) {
@@ -108,7 +110,7 @@ export class DiffView {
     this.space = props().space;
     this.listId = `gc-diff-${Math.random().toString(36).slice(2)}`;
     this.width = 300; this.offset = 0; this.bodyWidth = 0; this.bodyHeight = 0; this.imageVersion = 0;
-    this.previews = new Map();
+    this.previews = new Map(); this.previewing = false;
     this.uid = `gcd-${Math.random().toString(36).slice(2)}`;
     this.comments = []; this.commentsFile = null; this.saving = Promise.resolve(null);
     this.asking = new Set(); this.reading = new Set(); this.failures = new Map(); this.target = null; this.threadVersion = 0; this.display = null;
@@ -127,7 +129,7 @@ export class DiffView {
 
   clearRows() {
     this.rows = []; this.pairs = null; this.signature = null; this.heights = null;
-    this.imageRows = []; this.added = 0; this.removed = 0;
+    this.imageRows = []; this.added = 0; this.removed = 0; this.markdown = null;
   }
 
   // Record this tab's id the first time it's seen, so the panel reuses it:
@@ -348,7 +350,9 @@ export class DiffView {
         if (seen !== this.seen) return;
         const signature = lines.join("\n");
         if (signature === this.signature && !this.error) { changed = false; return; }
-        this.signature = signature;
+        const markdown = isMarkdownFile(item) ? await loadMarkdown(item, { root, on, hasHead }) : null;
+        if (seen !== this.seen) return;
+        this.signature = signature; this.markdown = markdown;
         this.showLines(lines, item);
         this.error = null;
         this.loadImages(item, { root, on, hasHead }, seen, cx);
@@ -384,14 +388,25 @@ export class DiffView {
 
   // --- drawing ----------------------------------------------------------------
 
-  toggle(t, layout) {
-    const cell = (id, name, tip, on) => h_flex().id(`gc-diff-${id}`).size(22).items_center().justify_center().rounded(5).cursor_pointer().tooltip(tip)
+  toggleCell(t, { id, name, tip, on, pick }) {
+    return h_flex().id(`gc-diff-${id}`).size(22).items_center().justify_center().rounded(5).cursor_pointer().tooltip(tip)
       .text_color(on ? t.accent : t.muted).when(on, (e) => e.bg(t.selected)).hover((s) => s.bg(on ? t.selected : t.hover))
-      .on_click((_e, cx) => { setLayout(id); cx.notify(); })
+      .on_click((_e, cx) => { pick(); cx.notify(); })
       .child(svg(icon(name)).size(13));
-    return h_flex().p(2).gap(2).flex_none().rounded(7).border_1().border_color(t.border)
-      .child(cell("unified", "rows", "One column", layout === "unified"))
-      .child(cell("split", "columns", "Two columns: before | after", layout === "split"));
+  }
+
+  toggleGroup(t, cells) {
+    return h_flex().p(2).gap(2).flex_none().rounded(7).border_1().border_color(t.border).children(cells.map((cell) => this.toggleCell(t, cell)));
+  }
+
+  toggle(t, layout) {
+    const cell = (id, name, tip) => ({ id, name, tip, on: layout === id, pick: () => setLayout(id) });
+    return this.toggleGroup(t, [cell("unified", "rows", "One column"), cell("split", "columns", "Two columns: before | after")]);
+  }
+
+  previewToggle(t) {
+    const cell = (id, name, tip, preview) => ({ id, name, tip, on: this.previewing === preview, pick: () => { this.previewing = preview; } });
+    return this.toggleGroup(t, [cell("changes", "diff", "Changes", false), cell("preview", "eye", "Preview", true)]);
   }
 
   header(t, layout) {
@@ -405,6 +420,7 @@ export class DiffView {
         .child(div().flex_1().min_w(0).truncate().font_semibold().child(this.item.area === "commit" ? this.item.subject : itemTitle(this.item)))
         .when(add > 0, (e) => e.child(div().text_size(11.5).text_color(t.ansi2).child(`+${add}`)))
         .when(del > 0, (e) => e.child(div().text_size(11.5).text_color(t.ansi1).child(`−${del}`)))
+        .when(isMarkdownFile(this.item), (e) => e.child(this.previewToggle(t)))
         .child(this.toggle(t, layout))
         .child(h_flex().id("gc-diff-close").size(24).items_center().justify_center().rounded(5).cursor_pointer().text_color(t.muted).tooltip("Close")
           .hover((s) => s.bg(t.hover).text_color(t.foreground))
@@ -638,16 +654,21 @@ export class DiffView {
     if (this.imageRows.length || this.comments.length || this.target) cx.notify();
   }
 
-  render(cx) {
-    this.sync(cx);
-    this.takePick(cx);
-    const t = theme(), layout = getLayout();
-    const root = v_flex().id("git-changes-diff").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(12.5)
-      .on_key_down((e, cx) => {
-        if (e.key !== "escape" || !this.target) return;
-        this.closeComposer(); cx.stop_propagation(); cx.notify();
-      });
-    if (!this.item) return root.child(div().p(16).text_color(t.dim).child("Pick a file in Changes to see its diff here."));
+  markdownColumn(text, side, t) {
+    const column = v_flex().flex_1().min_w(0).h_full();
+    if (text === null) return column.p(16).text_color(t.dim).child(this.markdown ? "Not in this version" : "Loading preview…");
+    return column.child(TextView.markdown(`${this.listId}-md-${side}`, text).selectable().scrollable().size_full().p(16));
+  }
+
+  /** The file rendered as Markdown: its new version in one column, before | after in two; a deleted file shows its old version. */
+  markdownBody(t, layout) {
+    const { before, after } = this.markdown ?? { before: null, after: null };
+    const columns = layout === "split" ? [["before", before], ["after", after]] : [[after === null ? "before" : "after", after ?? before]];
+    return h_flex().flex_1().min_h(0).children(columns.map(([side, text], i) =>
+      this.markdownColumn(text, side, t).when(i > 0, (e) => e.border_l(1).border_color(t.border))));
+  }
+
+  diffBody(t, layout) {
     if (layout === "split" && !this.pairs) this.pairs = G.splitRows(this.rows);
     const { rows, keys } = this.displayRows(layout === "split" ? this.pairs : this.rows);
     const heights = this.heightsFor(rows, layout);
@@ -655,7 +676,7 @@ export class DiffView {
       (range) => rows.slice(range.start, range.end).map((row, i) => this.rowView(row, t, layout, keys[range.start + i]))).size_full()
       .on_item_click((key, cx) => this.clickRow(key, cx))
       .on_item_secondary_click((key, _e, cx) => this.threadMenu(key, cx));
-    const body = div().id(`${this.listId}-body`).flex_1().min_h(0).relative().font_family(mono()).text_size(12)
+    return div().id(`${this.listId}-body`).flex_1().min_h(0).relative().font_family(mono()).text_size(12)
       .on_size_change((size, cx) => this.measured(size, cx))
       .when(layout === "unified", (e) => e.child(div().id(`${this.listId}-x`).size_full().overflow_x_scrollbar()
         .child(div().w_full().min_w(this.width + 110 + MARK + TEXT_PAD).h_full().child(list))))
@@ -670,11 +691,24 @@ export class DiffView {
         })
         .child(list)))
       .child(Scrollbar.vertical(`${this.listId}-${layout}`).viewport_from_layout().absolute().inset_0());
+  }
+
+  render(cx) {
+    this.sync(cx);
+    this.takePick(cx);
+    const t = theme(), layout = getLayout();
+    const root = v_flex().id("git-changes-diff").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(12.5)
+      .on_key_down((e, cx) => {
+        if (e.key !== "escape" || !this.target) return;
+        this.closeComposer(); cx.stop_propagation(); cx.notify();
+      });
+    if (!this.item) return root.child(div().p(16).text_color(t.dim).child("Pick a file in Changes to see its diff here."));
+    const previewing = this.previewing && isMarkdownFile(this.item);
     return root.child(this.header(t, layout))
       .when(layout === "split", (e) => e.child(h_flex().h(22).flex_none().items_center().border_b(1).border_color(t.border).text_size(11).text_color(t.muted)
         .child(div().flex_1().px(12).child("Before")).child(div().flex_1().px(12).border_l(1).border_color(t.border).child("After"))))
       .when(Boolean(this.error), (e) => e.child(div().px(12).py(8).text_color(t.ansi1).child(this.error)))
-      .child(body);
+      .child(previewing ? this.markdownBody(t, layout) : this.diffBody(t, layout));
   }
 }
 

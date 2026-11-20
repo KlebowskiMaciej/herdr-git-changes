@@ -110,17 +110,22 @@ test("image files get an image row in place of 'Binary file changed': modified, 
 
 test("where each side of an image comes from, by what is being shown", () => {
   const row = (change) => ({ path: "a/b.png", change });
-  assert.deepEqual(G.imageSides({ area: "file" }, row("modified"), true), { before: { revs: ["HEAD:a/b.png"] }, after: { worktree: "a/b.png" } });
-  assert.deepEqual(G.imageSides({ area: "file" }, row("added"), true), { before: null, after: { worktree: "a/b.png" } });
-  assert.deepEqual(G.imageSides({ area: "file" }, row("deleted"), true), { before: { revs: ["HEAD:a/b.png"] }, after: null });
-  assert.equal(G.imageSides({ area: "all" }, row("modified"), false).before, null, "no commit yet: nothing before");
-  assert.deepEqual(G.imageSides({ area: "commit", hash: "abc" }, row("modified"), true), { before: { revs: ["abc^1:a/b.png"] }, after: { revs: ["abc:a/b.png"] } });
-  assert.deepEqual(G.imageSides({ area: "stash", ref: "stash@{0}" }, row("added"), true), { before: null, after: { revs: ["stash@{0}:a/b.png", "stash@{0}^3:a/b.png"] } });
+  assert.deepEqual(G.fileSides({ area: "file" }, row("modified"), true), { before: { revs: ["HEAD:a/b.png"] }, after: { worktree: "a/b.png" } });
+  assert.deepEqual(G.fileSides({ area: "file" }, row("added"), true), { before: null, after: { worktree: "a/b.png" } });
+  assert.deepEqual(G.fileSides({ area: "file" }, row("deleted"), true), { before: { revs: ["HEAD:a/b.png"] }, after: null });
+  assert.equal(G.fileSides({ area: "all" }, row("modified"), false).before, null, "no commit yet: nothing before");
+  assert.deepEqual(G.fileSides({ area: "commit", hash: "abc" }, row("modified"), true), { before: { revs: ["abc^1:a/b.png"] }, after: { revs: ["abc:a/b.png"] } });
+  assert.deepEqual(G.fileSides({ area: "stash", ref: "stash@{0}" }, row("added"), true), { before: null, after: { revs: ["stash@{0}:a/b.png", "stash@{0}^3:a/b.png"] } });
 });
 
 test("image types: the usual ones, in any case, and nothing else", () => {
   for (const path of ["a.png", "a.PNG", "x/y.jpg", "a.jpeg", "a.gif", "a.webp", "a.svg", "a.bmp"]) assert.ok(G.imageType(path), path);
   for (const path of ["a.txt", "png", "a.png.bak", "a.psd", "dir.png/readme"]) assert.equal(G.imageType(path), null, path);
+});
+
+test("markdown files: .md and .markdown, in any case, and nothing else", () => {
+  for (const path of ["README.md", "docs/a.MD", "a.markdown"]) assert.ok(G.isMarkdown(path), path);
+  for (const path of ["a.txt", "md", "a.md.bak", "a.mdx", "dir.md/readme"]) assert.equal(G.isMarkdown(path), false, path);
 });
 
 test("the file tree knows how much of each folder is staged", () => {

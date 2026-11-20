@@ -194,6 +194,8 @@ export function imageType(path) {
   return IMAGE_TYPES.includes(type) ? type : null;
 }
 
+export const isMarkdown = (path) => /\.(md|markdown)$/i.test(path);
+
 const NEW_FILE = /^(new file mode|Binary files \/dev\/null and )/;
 const DELETED_FILE = /^(deleted file mode|Binary files .* and \/dev\/null differ$)/;
 
@@ -240,9 +242,9 @@ export function diffArgs(item, hasHead) {
   return hasHead ? [["diff", "HEAD", ...DIFF, ...path]] : [["diff", "--cached", ...DIFF, ...path], ["diff", ...DIFF, ...path]];
 }
 
-// Where an image's old and new bytes come from: `{ revs }` (git objects, tried in
-// order) or `{ worktree }` (the file on disk); null when that side has no image.
-export function imageSides(item, { path, change }, hasHead) {
+// Where a file's old and new bytes come from: `{ revs }` (git objects, tried in
+// order) or `{ worktree }` (the file on disk); null when that side has no file.
+export function fileSides(item, { path, change }, hasHead) {
   const revs = (...names) => ({ revs: names.map((name) => `${name}:${path}`) });
   let before, after;
   if (item.area === "commit") { before = revs(`${item.hash}^1`); after = revs(item.hash); }

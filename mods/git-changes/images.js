@@ -75,7 +75,7 @@ export async function previewSide(side, type, { root, on }) {
 
 /** The before and after previews of an image row of `item`'s diff. */
 export async function previewImage(item, row, { root, on, hasHead }) {
-  const sides = G.imageSides(item, row, hasHead);
+  const sides = G.fileSides(item, row, hasHead);
   const [before, after] = await Promise.all([previewSide(sides.before, row.type, { root, on }), previewSide(sides.after, row.type, { root, on })]);
   return { before, after };
 }

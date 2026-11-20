@@ -26,8 +26,9 @@ picks its own Changes panel, so you point your layouts at this one
 - **[Repo](#repo-tab):** every file your branch changed since it left its
   base branch (`main`, `develop`, `release/…`), as a merge request shows it.
 - **[Diff in the main area](#the-diff-in-the-main-area):** one column or two
-  (before | after), syntax colors for TypeScript, JavaScript, C# and HTML, and
-  images shown as pictures, before and after.
+  (before | after), syntax colors for TypeScript, JavaScript, C# and HTML,
+  images shown as pictures, before and after, and a rendered preview of a
+  Markdown file.
 - **[Comments on a line](#comments-on-a-line-answered-by-claude-code):** a
   copy of your Claude Code session answers under the line, and you can reply.
 - **[Commit](#commit-area):** commit, commit tracked (`-a`), amend, signoff,
@@ -155,6 +156,11 @@ the next click.
   picture. A commit, a stash or View Diff that touches images shows them inline,
   next to the text of the other files. An SVG also shows its text diff. Pictures
   are scaled down to fit, never up.
+- **Markdown preview:** a Markdown file (`.md`, `.markdown`) gets a second
+  switch in the header, Changes | Preview. Preview shows the file rendered: its
+  new version in one column, *Before* and *After* side by side in two columns.
+  A deleted file shows its old version. The choice stays for the next file the
+  tab shows.
 - The tab follows the files: saving a shown file refreshes it.
 - The row the tab shows is highlighted in the panel.
 
@@ -247,7 +253,7 @@ Push, pull and fetch failures also show as a notification.
 
 The mod runs `git` in the focused terminal's repository. For a space on another
 machine, it runs git on that machine. It also reads files there to preview an
-untracked file. Every git call is an argument list, never a shell line. Reads
+untracked file or a Markdown file. Every git call is an argument list, never a shell line. Reads
 use `--no-optional-locks` and leave the index alone, so the panel's own refreshes
 don't wake its file watcher.
 
@@ -420,6 +426,8 @@ Herdr does. It clicks through:
 - Open folder and Open in terminal;
 - Open with, with a stand-in `gio`;
 - image diffs: modified, added, deleted, in a commit and in a stash;
+- the Markdown preview: one and two columns, an untracked file, a Repo file,
+  and no switch on other files;
 - comment threads, with a stand-in `hc` and session files: the interactive
   fork started as a sub-agent, its answer read back, replies typed into it or
   reopening it, a second thread that skips the copies, waiting for permission
@@ -447,7 +455,8 @@ Files in `mods/git-changes/`:
 | `imageinfo.js` | An image's size from its bytes, scaling it to fit, file sizes. No Herdr imports. |
 | `history.js` | The History tab's graph. |
 | `lanes.js` | Lays commits out on lanes (from herdr-git-graph, unchanged). |
-| `diff.js` | Loading diffs, the one diff tab per space, its one- and two-column views, its image rows and its comment threads. |
+| `diff.js` | Loading diffs, the one diff tab per space, its one- and two-column views, its image rows, its Markdown preview and its comment threads. |
+| `markdown.js` | Reads a Markdown file's text before and after its change, for the preview. |
 | `comments.js` | Comment threads: pinning a comment to its line, saving them in the git folder, and asking a fork of the Claude Code session. |
 | `syntax.js` | Syntax colors: a file's language from its extension, and each diff line split into colored tokens. No Herdr imports. |
 | `menu.js` | The dropdown and right-click menus, shown as popups. |
@@ -505,7 +514,7 @@ Apache 2.0 text: [LICENSES/Apache-2.0.txt](LICENSES/Apache-2.0.txt).
 
 **[Lucide](https://lucide.dev)**, ISC License. The icons are Lucide's, as
 herdr-git-graph and Herdr draw them; `chevron-*.svg` come from Herdr's Files
-panel. `columns`, `diff`, `file`, `folder`, `history`, `list`, `list-tree`,
+panel. `columns`, `diff`, `eye`, `file`, `folder`, `history`, `list`, `list-tree`,
 `message-square-plus`, `minus`, `rows`, `search`, `sliders`, `undo` and `x` were added here from Lucide. See
 [LICENSES/ISC-Lucide.txt](LICENSES/ISC-Lucide.txt).
 

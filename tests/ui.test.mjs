@@ -53,6 +53,7 @@ function el(kind) {
 export class View {}
 export const div = () => el("div"), svg = (p) => { const e = el("svg"); e.props.path = [p]; return e; };
 export const image = (p) => { const e = el("image"); e.props.path = [p]; return e; };
+export const TextView = { markdown: (id, text) => { const e = el("markdown"); e.id = id; e.props.markdown = [text]; return e; } };
 export const v_flex = () => el("v"), h_flex = () => el("h");
 export const PathBuilder = { stroke: () => { const b = { move_to: () => b, line_to: () => b, cubic_bezier_to: () => b, dash_array: () => b, build: () => ({}) }; return b; } };
 globalThis.window = { paint_path: () => el("path") };
@@ -908,9 +909,9 @@ pic("art/hero.png", png(4, 3, [200, 0, 0])); pic("art/old.png", png(2, 2, [0, 0,
 picGit("add", "."); picGit("commit", "-qm", "art");
 pic("art/hero.png", png(8, 6, [0, 200, 0])); pic("art/logo.svg", svgText(20, 10)); rmSync(join(picRepo, "art/old.png")); pic("art/new.png", png(5, 5, [9, 9, 9]));
 
-const openDiff = async (item) => {
+const openDiff = async (item, root = picRepo) => {
   const saved = H.currentProps;
-  H.shared["git-changes.view"] = { sp1: { item, source: { root: picRepo, on: null }, at: Date.now(), tab: "tb9" } };
+  H.shared["git-changes.view"] = { sp1: { item, source: { root, on: null }, at: Date.now(), tab: "tb9" } };
   H.currentProps = { role: "diff", space: "sp1" };
   const view = new DiffView(); view.init(cx); await settle();
   H.currentProps = saved;
@@ -982,6 +983,67 @@ await test("an image too large to preview says so instead of loading", async () 
   assert.match(result.error, /Too large to preview \(11\.0 MB\)/);
   assert.equal((await previewSide({ worktree: "huge.png" }, "png", { root: picRepo, on: "machine-a" })).error, "Image preview works on this computer only");
   assert.equal(await previewSide(null, "png", { root: picRepo, on: null }), null);
+});
+
+// --- markdown preview ------------------------------------------------------------
+
+const docsRepo = join(base, "docs");
+const docsGit = (...a) => execFileSync("git", a, { cwd: docsRepo, env, encoding: "utf8" });
+mkdirSync(docsRepo);
+docsGit("init", "-q", "-b", "main");
+writeFileSync(join(docsRepo, "guide.md"), "# Guide\n\nold\n"); writeFileSync(join(docsRepo, "code.ts"), "a\n");
+docsGit("add", "."); docsGit("commit", "-qm", "docs");
+writeFileSync(join(docsRepo, "guide.md"), "# Guide\n\nnew\n"); writeFileSync(join(docsRepo, "code.ts"), "b\n"); writeFileSync(join(docsRepo, "draft.md"), "# Draft\n");
+
+const markdownShown = (tree) => walk(tree).filter((n) => n.kind === "markdown").map((n) => n.props.markdown[0]);
+const preview = async (item) => {
+  const view = await openDiff(item, docsRepo);
+  click(view.render(cx), "gc-diff-preview");
+  return view;
+};
+
+await test("a markdown file's diff can switch to its rendered preview and back", async () => {
+  const view = await openDiff({ area: "file", path: "guide.md", status: "M", staged: "none" }, docsRepo);
+  assert.deepEqual(markdownShown(view.render(cx)), [], "the diff shows first");
+  click(view.render(cx), "gc-diff-preview");
+  const tree = view.render(cx);
+  assert.deepEqual(markdownShown(tree), ["# Guide\n\nnew\n"], "one column: the new version");
+  assert.equal(walk(tree).some((n) => n.kind === "list"), false, "the preview takes the diff's place");
+  click(tree, "gc-diff-changes");
+  assert.deepEqual(markdownShown(view.render(cx)), []);
+});
+
+await test("in two columns, the preview shows the markdown before and after", async () => {
+  const view = await preview({ area: "file", path: "guide.md", status: "M", staged: "none" });
+  H.shared["git-changes.layout"] = "split";
+  const shown = markdownShown(view.render(cx));
+  H.shared["git-changes.layout"] = "unified";
+  assert.deepEqual(shown, ["# Guide\n\nold\n", "# Guide\n\nnew\n"]);
+});
+
+await test("an untracked markdown file previews its text, and has nothing before it", async () => {
+  const view = await preview({ area: "file", path: "draft.md", untracked: true, status: "A", staged: "none" });
+  assert.deepEqual(markdownShown(view.render(cx)), ["# Draft\n"]);
+  H.shared["git-changes.layout"] = "split";
+  const tree = view.render(cx);
+  H.shared["git-changes.layout"] = "unified";
+  assert.deepEqual(markdownShown(tree), ["# Draft\n"]);
+  assert.ok(texts(tree).includes("Not in this version"));
+});
+
+await test("a markdown file of the repo tab previews its version on the branch", async () => {
+  const head = docsGit("rev-parse", "HEAD").trim();
+  docsGit("add", "guide.md"); docsGit("commit", "-qm", "guide");
+  const next = docsGit("rev-parse", "HEAD").trim();
+  const view = await preview({ area: "base-file", path: "guide.md", base: head, head: next, baseName: "main" });
+  assert.deepEqual(markdownShown(view.render(cx)), ["# Guide\n\nnew\n"]);
+});
+
+await test("other files and whole-commit diffs have no preview switch", async () => {
+  const code = await openDiff({ area: "file", path: "code.ts", status: "M", staged: "none" }, docsRepo);
+  assert.equal(byId(code.render(cx), "gc-diff-preview"), undefined);
+  const all = await openDiff({ area: "all" }, docsRepo);
+  assert.equal(byId(all.render(cx), "gc-diff-preview"), undefined);
 });
 
 // --- comment threads ------------------------------------------------------------
