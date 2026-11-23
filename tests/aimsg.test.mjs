@@ -45,4 +45,28 @@ test("a reply loses the fences and quotes a model adds anyway", () => {
   assert.equal(AI.cleanMessage(null), "");
 });
 
+test("all Herdr AI CLIs and templates/skills are supported", () => {
+  assert.deepEqual(AI.agentArgs({ agent: "antigravity", model: "gemini-2.5-pro", effort: "" }, "P"), ["-p", "P", "--model", "gemini-2.5-pro"]);
+  assert.deepEqual(AI.agentArgs({ agent: "cursor", model: "sonnet-4", effort: "" }, "P"), ["-p", "P", "--model", "sonnet-4"]);
+  assert.deepEqual(AI.agentArgs({ agent: "gemini", model: "gemini-2.5-flash", effort: "" }, "P"), ["-p", "P", "-m", "gemini-2.5-flash"]);
+  assert.deepEqual(AI.agentArgs({ agent: "opencode", model: "", effort: "" }, "P"), ["run", "P"]);
+  assert.deepEqual(AI.normalizeAi({ agent: "codex", model: "o4-mini", effort: "low", template: "conventional" }), { agent: "codex", model: "o4-mini", effort: "low", template: "conventional" });
+  assert.deepEqual(AI.normalizeAi({ agent: "antigravity", model: "my-custom-model", effort: "" }), { agent: "antigravity", model: "my-custom-model", effort: "" });
+  const conv = AI.buildPrompt("+x", { template: "conventional" });
+  assert.ok(conv.includes("Conventional Commits"));
+  const skill = AI.buildPrompt("+x", { template: "repo", templateText: "Always prefix with JIRA-123" });
+  assert.ok(skill.includes("Always prefix with JIRA-123"));
+});
+
+test("an unknown template falls back to the default, which is not stored", () => {
+  assert.deepEqual(AI.normalizeAi({ agent: "claude", model: "sonnet", effort: "", template: "nope" }), { agent: "claude", model: "sonnet", effort: "" });
+  assert.deepEqual(AI.normalizeAi({ agent: "claude", model: "sonnet", effort: "", template: "repo" }), { agent: "claude", model: "sonnet", effort: "", template: "repo" });
+});
+
+test("a repo template longer than the cap is cut", () => {
+  const prompt = AI.buildPrompt("+x", { template: "repo", templateText: "a".repeat(5000) });
+  assert.ok(prompt.includes("a".repeat(3000)));
+  assert.ok(!prompt.includes("a".repeat(3001)));
+});
+
 console.log(`${passed} passed`);
