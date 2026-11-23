@@ -101,7 +101,12 @@ export class Panel {
     this.collapsed = JSON.parse(localStorage.getItem("collapsed") ?? "{}");
     this.signoff = localStorage.getItem("signoff") === "1";
     try { this.ai = AI.normalizeAi(JSON.parse(localStorage.getItem("ai") ?? "null")); } catch { this.ai = AI.normalizeAi(null); }
-    this.aiBusy = false;
+    this.aiBusy = false; this.aiOpen = false;
+    this.aiModelBox = InputState.new({ placeholder: "Custom model (optional)" });
+    this.aiModelBox.set_value(this.ai.model || "");
+    this.aiModelBox.on("change", (_e, cx) => { const m = this.aiModelBox.value().trim(); if (m !== this.ai.model) this.setAi({ model: m }, cx); });
+    this.aiModelBox.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
+    this.aiModelBox.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
     this.message = ""; this.menuActions = {}; this.menuSerial = 0;
     this.pickSeen = shared("git-changes.pick")?.at; this.seenChange = shared("git-graph.changed");
     this.handle = cx.focus_handle();
@@ -336,19 +341,57 @@ export class Panel {
     cx.notify();
   }
 
+  aiAgentMenu(cx) {
+    this.menu(Object.entries(AI.AGENTS).map(([id, v]) => ({
+      label: v.label, check: this.ai.agent === id,
+      run: (cx) => {
+        const model = AI.AGENTS[id].models[0];
+        this.setAi({ agent: id, model, effort: "" }, cx);
+        this.aiModelBox.set_value(model || "");
+      },
+    })), cx);
+  }
+
+  aiModelMenu(cx) {
+    const a = AI.AGENTS[this.ai.agent];
+    this.menu(a.models.map((m) => ({
+      label: m || "default", check: this.ai.model === m,
+      run: (cx) => { this.setAi({ model: m }, cx); this.aiModelBox.set_value(m || ""); },
+    })), cx);
+  }
+
   aiMenu(cx) {
+    this.aiOpen = !this.aiOpen;
+    cx.notify();
+  }
+
+  aiDrawer(t) {
     const a = AI.AGENTS[this.ai.agent], tpl = this.ai.template ?? "";
-    this.menu([
-      ...Object.entries(AI.AGENTS).map(([id, v]) => ({ label: v.label, check: this.ai.agent === id, run: (cx) => this.setAi({ agent: id, model: AI.AGENTS[id].models[0], effort: "" }, cx) })),
-      { separator: true },
-      ...a.models.map((m) => ({ label: `Model: ${m || "default"}`, check: this.ai.model === m, run: (cx) => this.setAi({ model: m }, cx) })),
-      ...(a.efforts.length > 1 ? [
-        { separator: true },
-        ...a.efforts.map((e) => ({ label: `Effort: ${e || "default"}`, check: this.ai.effort === e, run: (cx) => this.setAi({ effort: e }, cx) })),
-      ] : []),
-      { separator: true },
-      ...Object.entries(AI.TEMPLATES).map(([id, v]) => ({ label: `Template: ${v.label}`, check: tpl === id, run: (cx) => this.setAi({ template: id }, cx) })),
-    ], cx);
+    const pill = (id, label, active, onClick) => div().id(id).h(20).px(6).flex().items_center().rounded(4).cursor_pointer().text_size(11)
+      .text_color(active ? t.foreground : t.muted).when(active, (e) => e.bg(t.selected).border_1().border_color(t.accent + "66"))
+      .hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => onClick(cx)).child(label);
+    const drop = (id, label, onClick) => h_flex().id(id).h(22).px(7).gap(4).items_center().rounded(5).border_1().border_color(t.border).bg(t.background)
+      .cursor_pointer().text_size(11.5).text_color(t.foreground).hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => onClick(cx))
+      .child(div().truncate().child(label))
+      .child(svg(icon("chevron-down")).size(10).flex_none().text_color(t.dim));
+    return v_flex().id("ai-drawer").mx(10).p(8).gap(6).rounded(8).border_1().border_color(t.border).bg(t.raised)
+      .child(h_flex().gap(6).items_center()
+        .child(div().w(54).flex_none().text_size(11).text_color(t.dim).child("Agent"))
+        .child(drop("ai-pick-agent", a.label, (cx) => this.aiAgentMenu(cx)))
+        .child(div().flex_1())
+        .child(drop("ai-pick-model", this.ai.model || "default", (cx) => this.aiModelMenu(cx))))
+      .child(h_flex().gap(6).items_center()
+        .child(div().w(54).flex_none().text_size(11).text_color(t.dim).child("Model"))
+        .child(div().id("ai-model-input").flex_1().h(22).px(6).flex().items_center().rounded(5).border_1().border_color(t.border).bg(t.background)
+          .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); this.aiModelBox.focus(); })
+          .child(Input.new(this.aiModelBox).w_full().text_size(11.5).text_color(t.foreground))))
+      .when(a.efforts.length > 1, (e) => e.child(h_flex().gap(6).items_center()
+        .child(div().w(54).flex_none().text_size(11).text_color(t.dim).child("Effort"))
+        .child(h_flex().gap(3).children(a.efforts.map((ef) => pill(`ai-eff-${ef || "def"}`, ef || "auto", this.ai.effort === ef, (cx) => this.setAi({ effort: ef }, cx)))))))
+      .child(h_flex().gap(6).items_center()
+        .child(div().w(54).flex_none().text_size(11).text_color(t.dim).child("Template"))
+        .child(h_flex().gap(3).children(Object.entries(AI.TEMPLATES).map(([id, v]) => pill(`ai-tpl-${id || "def"}`, v.label, tpl === id, (cx) => this.setAi({ template: id }, cx))))));
   }
 
   commit(cx, push) {
@@ -1046,12 +1089,13 @@ export class Panel {
     const tip = this.amend ? "Replace the last commit" : mode === "tracked" ? "Nothing staged: commit every tracked change (git commit -a)" : mode === "conflict" ? "Resolve the conflicts first" : "Commit the staged changes · ⌘↩";
     return v_flex().flex_none().gap(8).pt(2).pb(8)
       .child(this.editorBox(t))
+      .when(this.aiOpen, (e) => e.child(this.aiDrawer(t)))
       .child(h_flex().px(10).gap(6).items_center()
         .when(this.amend, (e) => e.child(div().px(6).py(1).rounded(4).bg(t.accent + "22").text_size(11).text_color(t.accent).child("amend")))
         .when(this.signoff, (e) => e.child(div().px(6).py(1).rounded(4).bg(t.raised).text_size(11).text_color(t.muted).child("signoff")))
         .child(div().flex_1())
         .child(this.iconButton("ai-message", "sparkles", `Generate a message with ${AI.AGENTS[this.ai.agent].label}${this.ai.model ? ` (${this.ai.model})` : ""}`, (cx) => this.generateMessage(cx), t, { label: this.aiBusy ? "Writing…" : null, disabled: this.aiBusy || busy || (mode !== "staged" && mode !== "tracked") }))
-        .child(this.iconButton("ai-settings", "sliders", "Choose the agent, model and effort for generated messages", (cx) => this.aiMenu(cx), t))
+        .child(this.iconButton("ai-settings", "sliders", `AI settings (${AI.AGENTS[this.ai.agent].label}${this.ai.model ? ` · ${this.ai.model}` : ""})`, (cx) => this.aiMenu(cx), t, { active: this.aiOpen }))
         .child(this.split("commit", label, t, { primary: true, enabled: canCommit, tip, onClick: (cx) => this.commit(cx, false), onMenu: (cx) => this.commitOptions(cx) })));
   }
 

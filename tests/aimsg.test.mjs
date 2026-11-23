@@ -51,6 +51,7 @@ test("all Herdr AI CLIs and templates/skills are supported", () => {
   assert.deepEqual(AI.agentArgs({ agent: "gemini", model: "gemini-2.5-flash", effort: "" }, "P"), ["-p", "P", "-m", "gemini-2.5-flash"]);
   assert.deepEqual(AI.agentArgs({ agent: "opencode", model: "", effort: "" }, "P"), ["run", "P"]);
   assert.deepEqual(AI.normalizeAi({ agent: "codex", model: "o4-mini", effort: "low", template: "conventional" }), { agent: "codex", model: "o4-mini", effort: "low", template: "conventional" });
+  assert.deepEqual(AI.normalizeAi({ agent: "antigravity", model: "my-custom-model", effort: "" }), { agent: "antigravity", model: "my-custom-model", effort: "" });
   const conv = AI.buildPrompt("+x", { template: "conventional" });
   assert.ok(conv.includes("Conventional Commits"));
   const skill = AI.buildPrompt("+x", { template: "repo", templateText: "Always prefix with JIRA-123" });

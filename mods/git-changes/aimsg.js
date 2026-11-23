@@ -1,12 +1,14 @@
 // "Generate commit message": one-shot call to a coding agent's CLI with the diff
 // in the prompt (exec has no stdin). Pure helpers; panel.js owns the UI and exec.
 
+const CLAUDE_ALIASES = new Set(["haiku", "sonnet", "opus"]);
+
 export const AGENTS = {
   claude: { label: "Claude Code", command: "claude", models: ["", "haiku", "sonnet", "opus"], efforts: ["", "low", "medium", "high"] },
-  codex: { label: "Codex", command: "codex", models: ["", "o4-mini", "gpt-5.4", "gpt-5.3-codex"], efforts: ["", "low", "medium", "high"] },
-  hermes: { label: "Hermes", command: "hermes", models: ["", "claude-sonnet-4-5", "gpt-5.4", "gemini-2.5-pro"], efforts: ["", "low", "medium", "high"] },
-  antigravity: { label: "Antigravity", command: "agy", models: ["", "gemini-2.5-pro", "gemini-2.5-flash"], efforts: [""] },
-  cursor: { label: "Cursor", command: "agent", models: ["", "sonnet-4", "gpt-5"], efforts: [""] },
+  codex: { label: "Codex", command: "codex", models: ["", "gpt-5.4", "gpt-5.3-codex", "o4-mini"], efforts: ["", "low", "medium", "high"] },
+  hermes: { label: "Hermes", command: "hermes", models: ["", "claude-sonnet-4-6", "claude-opus-4-6", "gpt-5.4", "gemini-2.5-pro"], efforts: ["", "low", "medium", "high"] },
+  antigravity: { label: "Antigravity", command: "agy", models: ["", "gemini-2.5-pro", "gemini-2.5-flash", "claude-sonnet-4-6", "claude-opus-4-6"], efforts: [""] },
+  cursor: { label: "Cursor", command: "agent", models: ["", "claude-sonnet-4-6", "claude-opus-4-6", "gpt-5.4"], efforts: [""] },
   gemini: { label: "Gemini", command: "gemini", models: ["", "gemini-2.5-flash", "gemini-2.5-pro"], efforts: [""] },
   opencode: { label: "OpenCode", command: "opencode", models: [""], efforts: [""] },
   pi: { label: "Pi", command: "pi", models: [""], efforts: [""] },
@@ -15,8 +17,8 @@ export const AGENTS = {
 
 export const TEMPLATES = {
   "": { label: "Default", hint: "Imperative subject (<=72 chars)" },
-  conventional: { label: "Conventional Commits", hint: "type(scope): subject" },
-  repo: { label: "Repo template / SKILL.md", hint: "commit.template, .gitmessage, or SKILL.md" },
+  conventional: { label: "Conventional", hint: "type(scope): subject" },
+  repo: { label: "Repo / SKILL", hint: "commit.template, .gitmessage, or SKILL.md" },
 };
 
 export const TEMPLATE_PATHS = [
@@ -31,9 +33,14 @@ export const MAX_DIFF = 12000; // chars; the prompt is an argument, so it must s
 const MAX_TEMPLATE = 3000;
 
 export function normalizeAi(raw) {
-  const agent = AGENTS[raw?.agent] ? raw.agent : DEFAULT_AI.agent;
+  const validAgent = Boolean(AGENTS[raw?.agent]);
+  const agent = validAgent ? raw.agent : DEFAULT_AI.agent;
   const a = AGENTS[agent];
-  const model = a.models.includes(raw?.model) ? raw.model : agent === DEFAULT_AI.agent ? DEFAULT_AI.model : a.models[0];
+  const rawModel = typeof raw?.model === "string" ? raw.model.trim() : null;
+  const allowCustom = validAgent && rawModel !== null && (agent === "claude" || !CLAUDE_ALIASES.has(rawModel));
+  const model = rawModel !== null && (a.models.includes(rawModel) || allowCustom)
+    ? rawModel
+    : agent === DEFAULT_AI.agent ? DEFAULT_AI.model : a.models[0];
   const effort = a.efforts.includes(raw?.effort) ? raw.effort : "";
   const template = TEMPLATES[raw?.template] ? raw.template : "";
   return template ? { agent, model, effort, template } : { agent, model, effort };
