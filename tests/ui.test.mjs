@@ -182,6 +182,7 @@ H.focused = { space: "sp1", tab: "tb1", pane: "p1", terminal: "t1", cwd: repo };
 
 const { Panel } = await import(pathToFileURL(join(lib, "panel.js")).href);
 const { DiffView } = await import(pathToFileURL(join(lib, "diff.js")).href);
+const { ForgeView } = await import(pathToFileURL(join(lib, "forge-view.js")).href);
 const { Menu } = await import(pathToFileURL(join(lib, "menu.js")).href);
 const { zoneCenter } = await import(pathToFileURL(join(lib, "rows.js")).href);
 
@@ -1389,6 +1390,58 @@ await test("a Claude Code terminal in the diff's space is the session forked, an
     const call = runs().at(-1), opt = (name) => call[call.indexOf(name) + 1];
     assert.deepEqual([opt("--parent"), opt("--cwd"), claudeOf(call)[2]], ["t9", elsewhere, own]);
   } finally { H.panes = saved; }
+});
+
+await test("a GitHub remote adds optional PRs and Issues tabs, CI status chip, and a full PR detail view", async () => {
+  const forgeRepo = join(base, "forge-repo");
+  mkdirSync(forgeRepo);
+  const fgit = (...a) => execFileSync("git", a, { cwd: forgeRepo, env, encoding: "utf8" });
+  fgit("init", "-q", "-b", "main");
+  fgit("remote", "add", "origin", "git@github.com:daniell0gda/herdr-git-changes.git");
+  writeFileSync(join(forgeRepo, "a.js"), "export const x = 1;\n");
+  fgit("add", "."); fgit("commit", "-qm", "init");
+
+  const savedExec = H.exec, savedFocused = H.focused, savedProps = H.currentProps;
+  const ghCalls = [];
+  H.exec = async (cmd, args, opts) => {
+    if (cmd === "gh") {
+      ghCalls.push(args);
+      if (args[0] === "run") return { code: 0, stdout: JSON.stringify([{ workflowName: "CI", status: "completed", conclusion: "success", url: "https://github.com/daniell0gda/herdr-git-changes/actions/runs/1" }]), stderr: "" };
+      if (args[0] === "pr" && args[1] === "list") return { code: 0, stdout: JSON.stringify([{ number: 3, title: "Multi-provider comments", state: "OPEN", isDraft: false, author: { login: "alice" }, assignees: [{ login: "bob" }], reviewRequests: [{ login: "carol" }], headRefName: "feat/providers", baseRefName: "main", statusCheckRollup: [{ name: "test", status: "COMPLETED", conclusion: "SUCCESS" }], comments: [{ body: "nice" }], url: "https://github.com/daniell0gda/herdr-git-changes/pull/3" }]), stderr: "" };
+      if (args[0] === "pr" && args[1] === "view") return { code: 0, stdout: JSON.stringify({ number: 3, title: "Multi-provider comments", body: "## Why\nSupport all CLIs", state: "OPEN", isDraft: false, author: { login: "alice" }, assignees: [{ login: "bob" }], reviewRequests: [{ login: "carol" }], reviews: [{ author: { login: "dave" }, state: "APPROVED" }], labels: [{ name: "feat" }], headRefName: "feat/providers", baseRefName: "main", statusCheckRollup: [{ name: "test", status: "COMPLETED", conclusion: "SUCCESS" }], comments: [{ author: { login: "bob" }, body: "LGTM", createdAt: "2026-01-01T10:00:00Z" }], files: [{ path: "mods/git-changes/comments.js", additions: 40, deletions: 5 }], url: "https://github.com/daniell0gda/herdr-git-changes/pull/3" }), stderr: "" };
+      if (args[0] === "api") return { code: 0, stdout: JSON.stringify([{ user: { login: "carol" }, body: "Great idea", path: "mods/git-changes/comments.js", line: 12, created_at: "2026-01-01T11:00:00Z" }]), stderr: "" };
+      if (args[0] === "issue" && args[1] === "list") return { code: 0, stdout: JSON.stringify([{ number: 5, title: "Add forge tabs", state: "OPEN", author: { login: "alice" }, assignees: [{ login: "alice" }], labels: [{ name: "enhancement" }], comments: [], url: "https://github.com/daniell0gda/herdr-git-changes/issues/5" }]), stderr: "" };
+      return { code: 0, stdout: "[]", stderr: "" };
+    }
+    return savedExec(cmd, args, opts);
+  };
+  H.currentProps = { folder: forgeRepo };
+  try {
+    const p = new Panel(); p.init(cx); await settle();
+    const initial = p.render(cx);
+    assert.ok(byId(initial, "tab-reviews") && byId(initial, "tab-issues"), "GitHub remote reveals PRs and Issues tabs");
+    assert.ok(byId(initial, "gc-ci-chip"), "CI status chip shows in the branch row");
+    assert.ok(!ghCalls.some((a) => a[0] === "pr" || a[0] === "issue"), "PRs and Issues are not fetched until their tab opens");
+
+    byId(initial, "tab-reviews").handlers.click({}, cx);
+    await settle();
+    const prTree = p.render(cx);
+    assert.ok(texts(prTree).includes("Multi-provider comments"), "PR list renders lazily on tab click");
+    byId(prTree, "forge-review-3").handlers.click({}, cx);
+    await settle();
+
+    H.currentProps = { role: "forge", space: "sp1" };
+    const fv = new ForgeView(); fv.init(cx); await settle();
+    const detailText = texts(fv.render(cx)).join("\n");
+    assert.ok(detailText.includes("#3 Multi-provider comments") && detailText.includes("@bob") && detailText.includes("@dave (approved)") && detailText.includes("mods/git-changes/comments.js:12"), detailText);
+
+    p.toggleForgeTabs(cx);
+    assert.ok(!byId(p.render(cx), "tab-reviews"), "users can hide forge tabs if they want pure git");
+    p.toggleForgeTabs(cx);
+  } finally {
+    H.exec = savedExec; H.focused = savedFocused; H.currentProps = savedProps;
+    localStorage.setItem("forgeTabs", "1"); localStorage.setItem("tab", "changes");
+  }
 });
 rmSync(base, { recursive: true, force: true });
 console.log(`\n${passed} passed${process.exitCode ? ", some failed" : ""}`);
