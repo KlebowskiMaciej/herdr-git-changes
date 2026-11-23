@@ -342,11 +342,11 @@ const GH_RUN_FIELDS = "databaseId,displayTitle,name,status,conclusion,url,workfl
 
 export const reviewListArgs = (forge, state = "open") => (forge.kind === "github"
   ? ["pr", "list", "--state", state, "--limit", "30", "--json", GH_PR_LIST_FIELDS]
-  : ["mr", "list", ...(state === "closed" ? ["--closed"] : []), "-F", "json"]);
+  : ["mr", "list", ...(state === "closed" ? ["--closed"] : []), "--output", "json"]);
 
 export const issueListArgs = (forge, state = "open") => (forge.kind === "github"
   ? ["issue", "list", "--state", state, "--limit", "30", "--json", GH_ISSUE_FIELDS]
-  : ["issue", "list", ...(state === "closed" ? ["--closed"] : []), "-F", "json"]);
+  : ["issue", "list", ...(state === "closed" ? ["--closed"] : []), "--output", "json"]);
 
 export const ciArgs = (forge, branch, oid = null) => (forge.kind === "github"
   ? (oid ? ["api", `repos/${forge.repo}/commits/${oid}/check-runs`] : ["run", "list", "--branch", branch, "--limit", "5", "--json", GH_RUN_FIELDS])
@@ -427,7 +427,7 @@ export async function loadReviewDetail(execFn, forge, number, opts) {
     return parseGitHubReviewDetail(prOut, inlineOut);
   }
   const [mrOut, notesOut] = await Promise.all([
-    runCli(execFn, forge, ["mr", "view", String(number), "-F", "json"], opts),
+    runCli(execFn, forge, ["mr", "view", String(number), "--output", "json"], opts),
     runCli(execFn, forge, ["api", `projects/:fullpath/merge_requests/${number}/discussions`], opts).catch(() => "[]"),
   ]);
   return parseGitLabReviewDetail(mrOut, notesOut);
@@ -439,7 +439,7 @@ export async function loadIssueDetail(execFn, forge, number, opts) {
     return parseGitHubIssueDetail(out);
   }
   const [itOut, notesOut] = await Promise.all([
-    runCli(execFn, forge, ["issue", "view", String(number), "-F", "json"], opts),
+    runCli(execFn, forge, ["issue", "view", String(number), "--output", "json"], opts),
     runCli(execFn, forge, ["api", `projects/:fullpath/issues/${number}/notes`], opts).catch(() => "[]"),
   ]);
   return parseGitLabIssueDetail(itOut, notesOut);
