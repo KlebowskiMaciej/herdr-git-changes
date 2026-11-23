@@ -1133,7 +1133,8 @@ export class Panel {
     return h_flex().id("gc-ci-chip").h(22).px(6).gap(4).flex_none().items_center().rounded(5).border_1().border_color(color + "55").bg(color + "18")
       .cursor_pointer().text_size(11).text_color(color).tooltip(`CI: ${ci.summary}`)
       .hover((s) => s.bg(color + "2a"))
-      .on_click((_e, cx) => this.ciMenu(cx))
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => { cx.stop_propagation(); this.ciMenu(cx); })
       .child(glyph).child("CI");
   }
 
@@ -1224,15 +1225,17 @@ export class Panel {
   branchRow(t) {
     const b = this.branch, busy = Boolean(this.busy), action = G.remoteAction(b, this.remotes, this.hasHead);
     const name = b.detached ? `detached ${b.oid?.slice(0, 7) ?? ""}` : b.head;
+    const ci = this.ciChip(t);
     return h_flex().h(34).flex_none().px(10).gap(6).items_center()
-      .child(h_flex().id("branch").min_w(0).flex_1().gap(5).items_center().cursor_pointer().text_size(12).tooltip(b.upstream ? `Tracking ${b.upstream}` : "No upstream")
+      .child(h_flex().id("branch").min_w(0).gap(5).items_center().cursor_pointer().text_size(12).tooltip(b.upstream ? `Tracking ${b.upstream}` : "No upstream")
         .on_click((_e, cx) => this.branchMenu(cx))
         .child(svg(icon("branch")).size(13).flex_none().text_color(t.muted))
         .child(div().flex_none().text_color(t.muted).child(this.root.split("/").pop()))
         .child(div().flex_none().text_color(t.dim).child("/"))
         .child(div().min_w(0).truncate().hover((s) => s.text_color(t.accent)).child(name))
         .child(svg(icon("chevron-down")).size(11).flex_none().text_color(t.dim)))
-      .when(Boolean(this.ciChip(t)), (e) => e.child(this.ciChip(t)))
+      .child(div().flex_1())
+      .when(Boolean(ci), (e) => e.child(ci))
       .when(Boolean(action), (e) => e.child(this.split("remote", busy && /Push|Pull|Fetch/.test(this.busy) ? `${this.busy}…` : action.count ? `${action.count} ${action.label}` : action.label, t, {
         enabled: !busy, iconName: action.count ? null : action.type === "pull" ? "fetch" : action.type === "push" ? "push" : "refresh",
         tip: action.type === "push" ? (b.upstream ? `Push to ${b.upstream}` : "Push and set upstream") : action.type === "pull" ? `Pull ${b.upstream} (fast-forward only)` : "Fetch from every remote",
