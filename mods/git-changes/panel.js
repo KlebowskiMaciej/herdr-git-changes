@@ -275,10 +275,10 @@ export class Panel {
     const ciKey = `${this.root}:${this.branch.head}:${this.branch.oid ?? ""}`;
     if (!force && this.ciKey === ciKey && Date.now() - this.ciAt < 60000) return;
     this.ciLoading = true;
-    const { root, on, forge } = this, branch = this.branch.head, context = this.context;
+    const { root, on, forge } = this, branch = this.branch.head, oid = this.branch.oid ?? null, context = this.context;
     cx.spawn(async (cx) => {
       try {
-        const ci = await F.loadBranchCi(exec, forge, branch, { cwd: root, on });
+        const ci = await F.loadBranchCi(exec, forge, branch, { cwd: root, on }, oid);
         if (this.context !== context) return;
         this.ci = ci; this.ciKey = ciKey; this.ciAt = Date.now();
       } catch {
@@ -324,12 +324,13 @@ export class Panel {
     const jobs = (ci?.jobs ?? []).map((j) => ({
       label: `${j.state === "pass" ? "✓" : j.state === "fail" ? "✗" : j.state === "running" ? "●" : "·"} ${j.name}`,
       hint: j.state,
-      disabled: !j.url,
-      run: () => openUrl(j.url),
+      run: (cx) => this.pickForge({ kind: "ci", ...j }, cx),
     }));
+    const firstUrl = (ci?.jobs ?? []).find((j) => j.state === "fail" && j.url)?.url ?? (ci?.jobs ?? []).find((j) => j.url)?.url;
     this.menu([
       ...(jobs.length ? jobs : [{ label: ci?.summary || "No CI runs", disabled: true }]),
       { separator: true },
+      ...(firstUrl ? [{ label: "Open in browser ↗", icon: "cloud", run: () => openUrl(firstUrl) }] : []),
       { label: "Refresh CI status", icon: "refresh", run: (cx) => this.refreshBranchCi(cx, true) },
     ], cx);
   }

@@ -50,11 +50,19 @@ test("CI status summarizes pass, fail, running and empty runs for GitHub and Git
 
   const glRun = F.parseGitLabPipeline(
     JSON.stringify([{ id: 42, status: "running", web_url: "https://gl/42" }]),
-    JSON.stringify([{ name: "test", status: "running", web_url: "https://gl/j1" }, { name: "build", status: "success", web_url: "https://gl/j2" }]),
+    JSON.stringify([{ id: 101, name: "test", status: "running", web_url: "https://gl/j1" }, { id: 102, name: "build", status: "success", web_url: "https://gl/j2" }]),
   );
   assert.equal(glRun.state, "running");
   assert.equal(glRun.jobs.length, 2);
   assert.equal(F.parseGitHubRuns("[]").state, "none");
+
+  const ghChecks = F.parseGitHubCheckRuns(JSON.stringify({
+    check_runs: [{ id: 55, name: "unit-tests", status: "completed", conclusion: "failure", html_url: "https://github.com/o/r/actions/runs/999/job/55" }],
+  }));
+  assert.equal(ghChecks.state, "fail");
+  assert.equal(ghChecks.jobs[0].runId, "999");
+  assert.equal(ghChecks.jobs[0].name, "unit-tests");
+  assert.equal(F.parseGitHubRuns(JSON.stringify([{ displayTitle: "(Unknown event)", status: "completed", conclusion: "failure" }])).state, "none");
 });
 
 test("GitHub PR list and detail normalize assignees, reviewers, checks, inline comments and files", () => {

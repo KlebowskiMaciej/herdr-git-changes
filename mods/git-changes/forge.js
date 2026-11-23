@@ -75,14 +75,36 @@ export function summarizeChecks(jobs) {
   return { state: "pass", summary: `${passed.length}/${list.length} passed`, jobs: list };
 }
 
+export function parseGitHubCheckRuns(json) {
+  const parsed = JSON.parse(json || "[]");
+  const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.check_runs) ? parsed.check_runs : [];
+  const jobs = list.map((c) => {
+    const url = c.html_url || c.details_url || "";
+    const runMatch = url.match(/\/actions\/runs\/(\d+)/);
+    return {
+      id: c.id ?? null,
+      runId: runMatch ? runMatch[1] : null,
+      name: c.name || "Check",
+      state: ciBucket(c.status, c.conclusion),
+      url,
+      summary: c.output?.summary || c.output?.title || "",
+    };
+  });
+  return summarizeChecks(jobs);
+}
+
 export function parseGitHubRuns(json) {
   const runs = JSON.parse(json || "[]");
-  const jobs = (Array.isArray(runs) ? runs : []).map((r) => ({
-    name: r.workflowName || r.name || r.displayTitle || "Workflow",
-    title: r.displayTitle || r.name || "",
-    state: ciBucket(r.status, r.conclusion),
-    url: r.url || "",
-  }));
+  const jobs = (Array.isArray(runs) ? runs : [])
+    .filter((r) => (r.workflowName || r.name || r.displayTitle) && r.displayTitle !== "(Unknown event)")
+    .map((r) => ({
+      id: null,
+      runId: r.databaseId ? String(r.databaseId) : null,
+      name: r.workflowName || r.name || r.displayTitle || "Workflow",
+      title: r.displayTitle || r.name || "",
+      state: ciBucket(r.status, r.conclusion),
+      url: r.url || "",
+    }));
   return summarizeChecks(jobs);
 }
 
@@ -101,8 +123,8 @@ export function parseGitLabPipeline(pipelineJson, jobsJson = "[]") {
   if (!pipe) return { state: "none", summary: "No CI runs", jobs: [] };
   const rawJobs = JSON.parse(jobsJson || "[]");
   const jobs = Array.isArray(rawJobs) && rawJobs.length
-    ? rawJobs.map((j) => ({ name: j.name || j.stage || "Job", state: ciBucket(j.status, j.status), url: j.web_url || "" }))
-    : [{ name: `Pipeline #${pipe.id}`, state: ciBucket(pipe.status, pipe.status), url: pipe.web_url || "" }];
+    ? rawJobs.map((j) => ({ id: j.id ?? null, name: j.name || j.stage || "Job", state: ciBucket(j.status, j.status), url: j.web_url || "" }))
+    : [{ id: null, name: `Pipeline #${pipe.id}`, state: ciBucket(pipe.status, pipe.status), url: pipe.web_url || "" }];
   return summarizeChecks(jobs);
 }
 
@@ -326,8 +348,8 @@ export const issueListArgs = (forge, state = "open") => (forge.kind === "github"
   ? ["issue", "list", "--state", state, "--limit", "30", "--json", GH_ISSUE_FIELDS]
   : ["issue", "list", ...(state === "closed" ? ["--closed"] : []), "-F", "json"]);
 
-export const ciArgs = (forge, branch) => (forge.kind === "github"
-  ? ["run", "list", "--branch", branch, "--limit", "5", "--json", GH_RUN_FIELDS]
+export const ciArgs = (forge, branch, oid = null) => (forge.kind === "github"
+  ? (oid ? ["api", `repos/${forge.repo}/commits/${oid}/check-runs`] : ["run", "list", "--branch", branch, "--limit", "5", "--json", GH_RUN_FIELDS])
   : ["api", `projects/:fullpath/pipelines?ref=${encodeURIComponent(branch)}&per_page=1`]);
 
 function cliError(forge, err) {
@@ -348,9 +370,18 @@ async function runCli(execFn, forge, args, opts) {
   return r.stdout;
 }
 
-export async function loadBranchCi(execFn, forge, branch, opts) {
+export async function loadBranchCi(execFn, forge, branch, opts, oid = null) {
   if (!forge || !branch) return { state: "none", summary: "No CI runs", jobs: [] };
   if (forge.kind === "github") {
+    if (oid) {
+      const checksOut = await runCli(execFn, forge, ciArgs(forge, branch, oid), opts).catch(() => null);
+      if (checksOut) {
+        const parsed = parseGitHubCheckRuns(checksOut);
+        if (parsed.jobs.length) return parsed;
+      }
+      const commitRuns = await runCli(execFn, forge, ["run", "list", "--commit", oid, "--limit", "5", "--json", GH_RUN_FIELDS], opts).catch(() => "[]");
+      return parseGitHubRuns(commitRuns);
+    }
     const out = await runCli(execFn, forge, ciArgs(forge, branch), opts);
     return parseGitHubRuns(out);
   }
@@ -360,6 +391,21 @@ export async function loadBranchCi(execFn, forge, branch, opts) {
   if (!pipe?.id) return { state: "none", summary: "No CI runs", jobs: [] };
   const jobsOut = await runCli(execFn, forge, ["api", `projects/:fullpath/pipelines/${pipe.id}/jobs`], opts).catch(() => "[]");
   return parseGitLabPipeline(pipeOut, jobsOut);
+}
+
+/** Fetches the tail of a failed/completed CI job log (up to ~200 lines) for inline inspection. */
+export async function loadJobLog(execFn, forge, job, opts) {
+  if (!forge || !job) return "";
+  let raw = "";
+  if (forge.kind === "github") {
+    if (job.runId) raw = await runCli(execFn, forge, ["run", "view", String(job.runId), "--log-failed"], opts).catch(() => "");
+    if (!raw && job.id) raw = await runCli(execFn, forge, ["api", `repos/${forge.repo}/actions/jobs/${job.id}/logs`], opts).catch(() => "");
+  } else if (job.id) {
+    raw = await runCli(execFn, forge, ["api", `projects/:fullpath/jobs/${job.id}/trace`], opts).catch(() => "");
+  }
+  const clean = String(raw || "").replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").trim();
+  const lines = clean.split("\n");
+  return lines.length > 200 ? `… (${lines.length - 200} earlier lines omitted)\n${lines.slice(-200).join("\n")}` : clean;
 }
 
 export async function listReviews(execFn, forge, state, opts) {

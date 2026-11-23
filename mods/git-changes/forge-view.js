@@ -13,6 +13,7 @@ function liveTab(spaceId, id) {
 }
 
 export function forgeTabName(item, forge) {
+  if (item.kind === "ci") return `CI: ${item.name || "Job"}`;
   const prefix = item.kind === "review" ? (forge?.singular === "MR" ? "!" : "#") : "#";
   const tag = item.kind === "review" ? (forge?.singular || "PR") : "Issue";
   return `${tag} ${prefix}${item.number}`;
@@ -94,9 +95,11 @@ export class ForgeView {
     cx.spawn(async (cx) => {
       try {
         const opts = { cwd: root, on };
-        const detail = item.kind === "review"
-          ? await F.loadReviewDetail(exec, forge, item.number, opts)
-          : await F.loadIssueDetail(exec, forge, item.number, opts);
+        const detail = item.kind === "ci"
+          ? { ...item, log: await F.loadJobLog(exec, forge, item, opts) }
+          : item.kind === "review"
+            ? await F.loadReviewDetail(exec, forge, item.number, opts)
+            : await F.loadIssueDetail(exec, forge, item.number, opts);
         if (seen !== this.seen) return;
         this.detail = detail;
       } catch (e) {
@@ -121,6 +124,7 @@ export class ForgeView {
   header(t) {
     const d = this.detail ?? this.item, forge = this.source?.forge;
     const prefix = d.kind === "review" && forge?.singular === "MR" ? "!" : "#";
+    const heading = d.kind === "ci" ? (d.name || "CI Job") : `${prefix}${d.number} ${d.title || ""}`;
     const subBtn = (id, label) => div().id(`gc-forge-tab-${id}`).h(22).px(8).flex().items_center().rounded(5).cursor_pointer().text_size(11.5)
       .text_color(this.subtab === id ? t.foreground : t.muted)
       .when(this.subtab === id, (e) => e.bg(t.selected))
@@ -130,7 +134,7 @@ export class ForgeView {
     return v_flex().flex_none().border_b(1).border_color(t.border)
       .child(h_flex().h(40).px(12).gap(8).items_center()
         .child(this.pill(d.state || "open", stateTone(d.state, t), t))
-        .child(div().flex_1().min_w(0).truncate().font_semibold().child(`${prefix}${d.number} ${d.title || ""}`))
+        .child(div().flex_1().min_w(0).truncate().font_semibold().child(heading))
         .when(d.kind === "review" && Boolean(this.detail?.files?.length), (e) => e.child(h_flex().p(2).gap(2).rounded(7).border_1().border_color(t.border)
           .child(subBtn("overview", "Overview"))
           .child(subBtn("files", `Files (${this.detail.files.length})`))))
@@ -201,6 +205,13 @@ export class ForgeView {
       .child(this.commentsSection(d.comments, t));
   }
 
+  ciBody(d, t) {
+    const text = d.log ? `\`\`\`\n${d.log}\n\`\`\`` : (d.summary || "_No log output available here. Click **Open ↗** to inspect in the browser._");
+    return v_flex().p(14).gap(12)
+      .child(v_flex().p(12).rounded(8).border_1().border_color(t.border).bg(t.raised)
+        .child(TextView.markdown(`${this.uid}-cilog`, text).selectable().w_full()));
+  }
+
   render(cx) {
     this.sync(cx);
     const t = theme();
@@ -210,6 +221,6 @@ export class ForgeView {
       .when(Boolean(this.error), (e) => e.child(div().p(12).text_color(t.ansi1).child(this.error)))
       .when(!this.detail && this.loading, (e) => e.child(div().p(16).text_color(t.dim).child("Loading details…")))
       .when(Boolean(this.detail), (e) => e.child(v_flex().id(`${this.uid}-scroll`).flex_1().min_h(0).overflow_y_scrollbar()
-        .child(this.subtab === "files" && this.detail.files?.length ? this.filesSection(this.detail.files, t) : this.overviewBody(this.detail, t))));
+        .child(this.detail.kind === "ci" ? this.ciBody(this.detail, t) : this.subtab === "files" && this.detail.files?.length ? this.filesSection(this.detail.files, t) : this.overviewBody(this.detail, t))));
   }
 }
