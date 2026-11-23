@@ -335,7 +335,9 @@ export class Panel {
   ciMenu(cx) {
     const ci = this.ci, openUrl = (url) => { if (url) exec(appWindow().platform === "macos" ? "open" : "xdg-open", [url]).catch(() => null); };
     const jobs = (ci?.jobs ?? []).map((j) => ({
-      label: `${j.state === "pass" ? "✓" : j.state === "fail" ? "✗" : j.state === "running" ? "●" : "·"} ${j.name}`,
+      label: j.name,
+      icon: j.state === "pass" ? "check" : j.state === "fail" ? "x" : j.state === "running" ? "refresh" : "commit",
+      tone: j.state === "pass" ? "ansi2" : j.state === "fail" ? "ansi1" : j.state === "running" ? "ansi3" : "muted",
       hint: j.state,
       run: (cx) => this.pickForge({ kind: "ci", ...j }, cx),
     }));
