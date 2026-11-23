@@ -103,7 +103,7 @@ export class Panel {
     this.model = null; this.press = null; this.signature = null;
     this.entries = []; this.stashes = []; this.remotes = []; this.last = null;
     this.forge = null; this.showForge = localStorage.getItem("forgeTabs") !== "0";
-    this.forgeState = "open"; this.forgeCache = {}; this.forgeLoading = false; this.forgeError = null;
+    this.forgeState = "open"; this.forgeLabel = null; this.forgeCache = {}; this.forgeLoading = false; this.forgeError = null;
     this.ci = null; this.ciKey = null; this.ciAt = 0; this.ciLoading = false;
     this.history = new History(); this.panelWidth = 400;
     this.branch = null;
@@ -155,7 +155,7 @@ export class Panel {
   reset() {
     this.menuActions = {}; this.armed = null;
     this.root = null; this.branch = null; this.entries = []; this.stashes = []; this.last = null; this.history.clear();
-    this.forge = null; this.forgeCache = {}; this.forgeLoading = false; this.forgeError = null;
+    this.forge = null; this.forgeLabel = null; this.forgeCache = {}; this.forgeLoading = false; this.forgeError = null;
     this.ci = null; this.ciKey = null; this.ciAt = 0; this.ciLoading = false;
     this.limited = false; this.model = null; this.signature = null; this.press = null;
     this.repo = null; this.repoModel = null; this.compareBase = null; this.compareHead = null;
@@ -279,20 +279,25 @@ export class Panel {
   }
 
   refreshBranchCi(cx, force = false) {
-    if (!this.forge || !this.showForge || !this.branch?.head || this.branch.detached || this.ciLoading) return;
+    if (!this.forge || !this.showForge || !this.branch?.head || this.branch.detached) {
+      if (this.ci) { this.ci = null; this.ciKey = null; }
+      return;
+    }
     const ciKey = `${this.root}:${this.branch.head}:${this.branch.oid ?? ""}`;
     if (!force && this.ciKey === ciKey && Date.now() - this.ciAt < 60000) return;
-    this.ciLoading = true;
+    if (this.ciKey !== ciKey) { this.ci = null; this.ciKey = ciKey; this.ciAt = 0; }
+    if (this.ciLoading && this.ciLoadingKey === ciKey) return;
+    this.ciLoading = true; this.ciLoadingKey = ciKey;
     const { root, on, forge } = this, branch = this.branch.head, oid = this.branch.oid ?? null, context = this.context;
     cx.spawn(async (cx) => {
       try {
         const ci = await F.loadBranchCi(exec, forge, branch, { cwd: root, on }, oid);
-        if (this.context !== context) return;
-        this.ci = ci; this.ciKey = ciKey; this.ciAt = Date.now();
+        if (this.context !== context || this.ciKey !== ciKey) return;
+        this.ci = ci; this.ciAt = Date.now();
       } catch {
-        if (this.context === context) { this.ci = null; this.ciKey = ciKey; this.ciAt = Date.now(); }
+        if (this.context === context && this.ciKey === ciKey) { this.ci = null; this.ciAt = Date.now(); }
       } finally {
-        if (this.context === context) { this.ciLoading = false; cx.notify(); }
+        if (this.context === context && this.ciLoadingKey === ciKey) { this.ciLoading = false; cx.notify(); }
       }
     });
   }
@@ -1039,12 +1044,30 @@ export class Panel {
         .child(tab("issues", "Issues")));
   }
 
-  forgeItems() {
+  forgeRawItems() {
     const kind = this.tab === "issues" ? "issues" : "reviews";
-    const list = this.forgeCache[`${this.root}:${kind}:${this.forgeState}`] ?? [];
+    return this.forgeCache[`${this.root}:${kind}:${this.forgeState}`] ?? [];
+  }
+
+  forgeItems() {
+    let list = this.forgeRawItems();
+    if (this.forgeLabel) list = list.filter((it) => (it.labels ?? []).includes(this.forgeLabel));
     const q = this.filter.trim().toLowerCase();
     if (!q) return list;
     return list.filter((it) => `#${it.number} ${it.title} ${it.author} ${(it.labels ?? []).join(" ")}`.toLowerCase().includes(q));
+  }
+
+  forgeLabelMenu(cx) {
+    const counts = new Map();
+    for (const it of this.forgeRawItems()) for (const l of it.labels ?? []) counts.set(l, (counts.get(l) ?? 0) + 1);
+    const labels = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    this.menu([
+      { label: "All labels", check: !this.forgeLabel, run: () => { this.forgeLabel = null; } },
+      ...(labels.length ? [{ separator: true }, ...labels.map(([l, n]) => ({
+        label: l, hint: String(n), check: this.forgeLabel === l,
+        run: () => { this.forgeLabel = this.forgeLabel === l ? null : l; },
+      }))] : []),
+    ], cx);
   }
 
   forgeToolbar(t) {
@@ -1052,13 +1075,20 @@ export class Panel {
       const on = this.forgeState === state;
       return div().id(id).h(20).px(8).flex().items_center().rounded(5).text_size(11.5).cursor_pointer()
         .text_color(on ? t.foreground : t.muted).when(on, (e) => e.bg(t.raised).border_1().border_color(t.border))
-        .hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { if (!on) { this.forgeState = state; this.loadForgeList(cx); cx.notify(); } }).child(text);
+        .hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { if (!on) { this.forgeState = state; this.forgeLabel = null; this.loadForgeList(cx); cx.notify(); } }).child(text);
     };
     const count = this.forgeItems().length;
     return h_flex().h(32).flex_none().px(8).gap(6).items_center().border_b(1).border_color(t.border)
       .child(h_flex().p(2).gap(2).rounded(7).border_1().border_color(t.border)
         .child(segment("forge-open", "Open", "open"))
         .child(segment("forge-closed", "Closed", "closed")))
+      .child(h_flex().id("forge-label-filter").h(22).px(7).gap(4).items_center().rounded(5).border_1()
+        .border_color(this.forgeLabel ? t.accent + "66" : t.border).bg(this.forgeLabel ? t.accent + "1a" : t.background)
+        .cursor_pointer().text_size(11).text_color(this.forgeLabel ? t.accent : t.muted).hover((s) => s.bg(t.hover))
+        .tooltip("Filter by label")
+        .on_click((_e, cx) => this.forgeLabelMenu(cx))
+        .child(svg(icon("tag")).size(11).flex_none())
+        .child(div().max_w(80).truncate().child(this.forgeLabel || "Label")))
       .child(div().flex_1().text_right().text_size(11).text_color(t.dim).child(this.forgeLoading ? "Loading…" : `${count}`))
       .child(this.iconButton("refresh-forge", "refresh", "Refresh", (cx) => this.loadForgeList(cx, true), t, { disabled: this.forgeLoading }));
   }
@@ -1088,7 +1118,10 @@ export class Panel {
             .when(Boolean(dot), (e) => e.child(div().flex_none().text_size(11).text_color(dot.color).child(dot.text))))
           .when(Boolean(meta), (e) => e.child(div().truncate().text_size(11).text_color(t.dim).child(meta)))
           .when(Boolean(it.labels?.length), (e) => e.child(h_flex().gap(4).flex_wrap().pt(2)
-            .children(it.labels.slice(0, 5).map((l) => div().px(5).py(1).rounded(4).bg(t.accent + "1a").text_size(10.5).text_color(t.accent).child(l)))));
+            .children(it.labels.slice(0, 5).map((l, li) => div().id(`forge-${it.kind}-${it.number}-lbl-${li}`).px(5).py(1).rounded(4)
+              .bg(this.forgeLabel === l ? t.accent + "33" : t.accent + "1a").text_size(10.5).text_color(t.accent).cursor_pointer()
+              .on_click((_e, cx) => { cx.stop_propagation(); this.forgeLabel = this.forgeLabel === l ? null : l; cx.notify(); })
+              .child(l)))));
       }));
   }
 
