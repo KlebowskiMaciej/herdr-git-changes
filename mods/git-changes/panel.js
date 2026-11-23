@@ -102,11 +102,6 @@ export class Panel {
     this.signoff = localStorage.getItem("signoff") === "1";
     try { this.ai = AI.normalizeAi(JSON.parse(localStorage.getItem("ai") ?? "null")); } catch { this.ai = AI.normalizeAi(null); }
     this.aiBusy = false; this.aiOpen = false;
-    this.aiModelBox = InputState.new({ placeholder: "Custom model (optional)" });
-    this.aiModelBox.set_value(this.ai.model || "");
-    this.aiModelBox.on("change", (_e, cx) => { const m = this.aiModelBox.value().trim(); if (m !== this.ai.model) this.setAi({ model: m }, cx); });
-    this.aiModelBox.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
-    this.aiModelBox.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
     this.message = ""; this.menuActions = {}; this.menuSerial = 0;
     this.pickSeen = shared("git-changes.pick")?.at; this.seenChange = shared("git-graph.changed");
     this.handle = cx.focus_handle();
@@ -344,19 +339,7 @@ export class Panel {
   aiAgentMenu(cx) {
     this.menu(Object.entries(AI.AGENTS).map(([id, v]) => ({
       label: v.label, check: this.ai.agent === id,
-      run: (cx) => {
-        const model = AI.AGENTS[id].models[0];
-        this.setAi({ agent: id, model, effort: "" }, cx);
-        this.aiModelBox.set_value(model || "");
-      },
-    })), cx);
-  }
-
-  aiModelMenu(cx) {
-    const a = AI.AGENTS[this.ai.agent];
-    this.menu(a.models.map((m) => ({
-      label: m || "default", check: this.ai.model === m,
-      run: (cx) => { this.setAi({ model: m }, cx); this.aiModelBox.set_value(m || ""); },
+      run: (cx) => this.setAi({ agent: id, model: "", effort: "" }, cx),
     })), cx);
   }
 
@@ -378,14 +361,7 @@ export class Panel {
     return v_flex().id("ai-drawer").mx(10).p(8).gap(6).rounded(8).border_1().border_color(t.border).bg(t.raised)
       .child(h_flex().gap(6).items_center()
         .child(div().w(54).flex_none().text_size(11).text_color(t.dim).child("Agent"))
-        .child(drop("ai-pick-agent", a.label, (cx) => this.aiAgentMenu(cx)))
-        .child(div().flex_1())
-        .child(drop("ai-pick-model", this.ai.model || "default", (cx) => this.aiModelMenu(cx))))
-      .child(h_flex().gap(6).items_center()
-        .child(div().w(54).flex_none().text_size(11).text_color(t.dim).child("Model"))
-        .child(div().id("ai-model-input").flex_1().h(22).px(6).flex().items_center().rounded(5).border_1().border_color(t.border).bg(t.background)
-          .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); this.aiModelBox.focus(); })
-          .child(Input.new(this.aiModelBox).w_full().text_size(11.5).text_color(t.foreground))))
+        .child(drop("ai-pick-agent", a.label, (cx) => this.aiAgentMenu(cx))))
       .when(a.efforts.length > 1, (e) => e.child(h_flex().gap(6).items_center()
         .child(div().w(54).flex_none().text_size(11).text_color(t.dim).child("Effort"))
         .child(h_flex().gap(3).children(a.efforts.map((ef) => pill(`ai-eff-${ef || "def"}`, ef || "auto", this.ai.effort === ef, (cx) => this.setAi({ effort: ef }, cx)))))))
