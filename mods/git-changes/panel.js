@@ -287,8 +287,6 @@ export class Panel {
     cx.notify();
   }
 
-  // Asks the chosen agent's CLI for a message from the staged diff (or every tracked
-  // change when nothing is staged) and drops it into the box. Never commits.
   async loadCommitTemplate(root, on) {
     const cfg = await exec("git", [...G.READ, "config", "--get", "commit.template"], { cwd: root, on }).catch(() => null);
     const configured = cfg?.code === 0 ? cfg.stdout.trim() : "";
@@ -304,6 +302,8 @@ export class Panel {
     return "";
   }
 
+  // Asks the chosen agent's CLI for a message from the staged diff (or every tracked
+  // change when nothing is staged) and drops it into the box. Never commits.
   generateMessage(cx) {
     if (this.aiBusy || this.busy || this.loading || !this.root) return;
     const mode = this.mode();
@@ -343,6 +343,13 @@ export class Panel {
     })), cx);
   }
 
+  aiModelMenu(cx) {
+    this.menu(AI.AGENTS[this.ai.agent].models.map((m) => ({
+      label: m || "default", check: this.ai.model === m,
+      run: (cx) => this.setAi({ model: m }, cx),
+    })), cx);
+  }
+
   aiMenu(cx) {
     this.aiOpen = !this.aiOpen;
     cx.notify();
@@ -362,6 +369,9 @@ export class Panel {
       .child(h_flex().gap(6).items_center()
         .child(div().w(54).flex_none().text_size(11).text_color(t.dim).child("Agent"))
         .child(drop("ai-pick-agent", a.label, (cx) => this.aiAgentMenu(cx))))
+      .when(a.models.length > 1, (e) => e.child(h_flex().gap(6).items_center()
+        .child(div().w(54).flex_none().text_size(11).text_color(t.dim).child("Model"))
+        .child(drop("ai-pick-model", this.ai.model || "default", (cx) => this.aiModelMenu(cx)))))
       .when(a.efforts.length > 1, (e) => e.child(h_flex().gap(6).items_center()
         .child(div().w(54).flex_none().text_size(11).text_color(t.dim).child("Effort"))
         .child(h_flex().gap(3).children(a.efforts.map((ef) => pill(`ai-eff-${ef || "def"}`, ef || "auto", this.ai.effort === ef, (cx) => this.setAi({ effort: ef }, cx)))))))

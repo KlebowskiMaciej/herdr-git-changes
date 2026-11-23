@@ -58,4 +58,15 @@ test("all Herdr AI CLIs and templates/skills are supported", () => {
   assert.ok(skill.includes("Always prefix with JIRA-123"));
 });
 
+test("an unknown template falls back to the default, which is not stored", () => {
+  assert.deepEqual(AI.normalizeAi({ agent: "claude", model: "sonnet", effort: "", template: "nope" }), { agent: "claude", model: "sonnet", effort: "" });
+  assert.deepEqual(AI.normalizeAi({ agent: "claude", model: "sonnet", effort: "", template: "repo" }), { agent: "claude", model: "sonnet", effort: "", template: "repo" });
+});
+
+test("a repo template longer than the cap is cut", () => {
+  const prompt = AI.buildPrompt("+x", { template: "repo", templateText: "a".repeat(5000) });
+  assert.ok(prompt.includes("a".repeat(3000)));
+  assert.ok(!prompt.includes("a".repeat(3001)));
+});
+
 console.log(`${passed} passed`);

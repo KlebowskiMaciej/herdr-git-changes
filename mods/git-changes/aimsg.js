@@ -16,9 +16,9 @@ export const AGENTS = {
 };
 
 export const TEMPLATES = {
-  "": { label: "Default", hint: "Imperative subject (<=72 chars)" },
-  conventional: { label: "Conventional", hint: "type(scope): subject" },
-  repo: { label: "Repo / SKILL", hint: "commit.template, .gitmessage, or SKILL.md" },
+  "": { label: "Default" },
+  conventional: { label: "Conventional" },
+  repo: { label: "Repo / SKILL" },
 };
 
 export const TEMPLATE_PATHS = [
