@@ -223,11 +223,18 @@ the next click.
 - **Generate a message (✨):** asks a coding agent's CLI to write the message
   from the staged diff (every tracked change when nothing is staged) and puts
   it in the box. It never commits, and it doesn't overwrite a message you've
-  typed. The sliders button next to it picks the agent (Claude Code, Hermes or
-  Codex), the model and the effort; the choice is remembered. It runs a fresh
-  one-shot command (`claude -p`, `hermes -z`, `codex exec`) with the diff,
+  typed. The sliders button next to it opens a drawer with the agent (Claude
+  Code, Codex, Hermes, Antigravity, Cursor, Gemini, OpenCode, Pi or Copilot), the
+  model, the effort and the template; the choice is remembered. It runs a fresh
+  one-shot command (`claude -p`, `hermes -z`, `codex exec`, …) with the diff,
   cut to 12,000 characters, and your last five commit subjects in the prompt.
   The agent's CLI must be installed on the repository's machine.
+  The template is *Default* (an imperative subject), *Conventional* (Conventional
+  Commits), or *Repo / SKILL*, which adds the first of these files that has text,
+  cut to 3,000 characters: `git config commit.template`, `.gitmessage`,
+  `.github/commit-template.md`, `.ai/skills/commit/SKILL.md`,
+  `.claude/skills/commit/SKILL.md`, then `commit-template.md` in the mod's folder
+  (this computer only). Without such a file, *Repo / SKILL* acts like *Default*.
 - **Commit or Commit Tracked:** the button commits what's staged. When nothing
   is staged it reads *Commit Tracked* and runs `git commit -a`. Its ⌄ menu has
   Amend (pre-filled with the last message), Signoff, Commit & push, Stash all
@@ -488,7 +495,7 @@ Files in `mods/git-changes/`:
 | `mermaid.js` | Finds the Mermaid blocks in Markdown and draws each with the Mermaid CLI. |
 | `comments.js` | Comment threads: pinning a comment to its line, saving them in the git folder, and asking a fork of the Claude Code session. |
 | `syntax.js` | Syntax colors: a file's language from its extension, and each diff line split into colored tokens. No Herdr imports. |
-| `aimsg.js` | The generated commit message: the agent, model and effort choices, the prompt, each agent's arguments and the cleanup of its reply. No Herdr imports. |
+| `aimsg.js` | The generated commit message: the agent, model, effort and template choices, the prompt, each agent's arguments and the cleanup of its reply. No Herdr imports. |
 | `menu.js` | The dropdown and right-click menus, shown as popups. |
 | `git.js` | Parsing git's output, the folder tree, pairing lines for two columns, finding the images in a diff, and the argv behind every action. No Herdr imports, so node can test it. |
 
