@@ -14,7 +14,7 @@
 // both panels refresh after either acts.
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, TextareaState, Textarea, InputState, Input, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
-import { spaces, panes, focused, exec, watchFolder, theme, settings, notify, shared, setShared, openOverlay, run, props, nextCommand, window as appWindow } from "herdr";
+import { spaces, panes, focused, exec, watchFolder, theme, settings, notify, shared, setShared, openOverlay, run, props, nextCommand, readTextFile, appHome, window as appWindow } from "herdr";
 import * as G from "./git.js";
 import * as Apps from "./apps.js";
 import * as AI from "./aimsg.js";
@@ -289,6 +289,21 @@ export class Panel {
 
   // Asks the chosen agent's CLI for a message from the staged diff (or every tracked
   // change when nothing is staged) and drops it into the box. Never commits.
+  async loadCommitTemplate(root, on) {
+    const cfg = await exec("git", [...G.READ, "config", "--get", "commit.template"], { cwd: root, on }).catch(() => null);
+    const configured = cfg?.code === 0 ? cfg.stdout.trim() : "";
+    const candidates = [
+      ...(configured ? [configured.startsWith("/") ? configured : `${root}/${configured}`] : []),
+      ...AI.TEMPLATE_PATHS.map((p) => `${root}/${p}`),
+      ...(on ? [] : [`${appHome()}/mods/git-changes/commit-template.md`]),
+    ];
+    for (const path of candidates) {
+      const text = await readTextFile(path, { on }).catch(() => null);
+      if (text?.trim()) return text;
+    }
+    return "";
+  }
+
   generateMessage(cx) {
     if (this.aiBusy || this.busy || this.loading || !this.root) return;
     const mode = this.mode();
@@ -301,8 +316,11 @@ export class Panel {
         const diff = await exec("git", [...G.READ, ...AI.diffArgs(mode, hasHead)], { cwd: root, on });
         if (diff.code !== 0) throw new Error(G.gitError(diff));
         if (!diff.stdout.trim()) throw new Error("No changes to describe");
-        const log = hasHead ? await exec("git", [...G.READ, "log", "-5", "--format=%s"], { cwd: root, on }).catch(() => null) : null;
-        const prompt = AI.buildPrompt(diff.stdout, { recent: log?.code === 0 ? log.stdout.trim() : "" });
+        const [log, templateText] = await Promise.all([
+          hasHead ? exec("git", [...G.READ, "log", "-5", "--format=%s"], { cwd: root, on }).catch(() => null) : null,
+          ai.template === "repo" ? this.loadCommitTemplate(root, on) : "",
+        ]);
+        const prompt = AI.buildPrompt(diff.stdout, { recent: log?.code === 0 ? log.stdout.trim() : "", template: ai.template ?? "", templateText });
         const r = await exec(AI.AGENTS[ai.agent].command, AI.agentArgs(ai, prompt), { cwd: root, on, timeout: 120000 });
         if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").slice(-2).join(" ") || `${ai.agent} exited ${r.code}`);
         const text = AI.cleanMessage(r.stdout);
@@ -319,13 +337,17 @@ export class Panel {
   }
 
   aiMenu(cx) {
-    const a = AI.AGENTS[this.ai.agent];
+    const a = AI.AGENTS[this.ai.agent], tpl = this.ai.template ?? "";
     this.menu([
       ...Object.entries(AI.AGENTS).map(([id, v]) => ({ label: v.label, check: this.ai.agent === id, run: (cx) => this.setAi({ agent: id, model: AI.AGENTS[id].models[0], effort: "" }, cx) })),
       { separator: true },
       ...a.models.map((m) => ({ label: `Model: ${m || "default"}`, check: this.ai.model === m, run: (cx) => this.setAi({ model: m }, cx) })),
+      ...(a.efforts.length > 1 ? [
+        { separator: true },
+        ...a.efforts.map((e) => ({ label: `Effort: ${e || "default"}`, check: this.ai.effort === e, run: (cx) => this.setAi({ effort: e }, cx) })),
+      ] : []),
       { separator: true },
-      ...a.efforts.map((e) => ({ label: `Effort: ${e || "default"}`, check: this.ai.effort === e, run: (cx) => this.setAi({ effort: e }, cx) })),
+      ...Object.entries(AI.TEMPLATES).map(([id, v]) => ({ label: `Template: ${v.label}`, check: tpl === id, run: (cx) => this.setAi({ template: id }, cx) })),
     ], cx);
   }
 
