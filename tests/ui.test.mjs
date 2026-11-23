@@ -85,6 +85,7 @@ export const openOverlay = (spec) => { H.overlays.push(spec); return "o1"; };
 export const closeOverlay = () => null;
 export const exec = (cmd, args, opts) => H.exec(cmd, args, opts);
 export const hc = (args) => H.hc(args);
+export const knownAgents = (opts) => (H.knownAgents ? H.knownAgents(opts) : Promise.resolve([]));
 export const terminals = () => H.terminals;
 export const readTextFile = (p) => H.read(p);
 export const writeTextFile = (p, text, expected) => H.write(p, text, expected);
@@ -1136,6 +1137,7 @@ H.hc = async (args) => {
     return { code: 0, stdout: JSON.stringify({ address, state: "live" }), stderr: "" };
   }
   if (args[0] === "kill") { const t = H.terminals.find((x) => x.address === args[1]); if (t) t.state = "finished"; }
+  if (args[0] === "read") { const id = args.at(-1); return { code: 0, stdout: H.terminalScreens?.[id] ?? "", stderr: "" }; }
   return { code: 0, stdout: "{}", stderr: "" };
 };
 const runs = () => hcCalls.filter((a) => a[0] === "run");
@@ -1389,6 +1391,77 @@ await test("a Claude Code terminal in the diff's space is the session forked, an
     const call = runs().at(-1), opt = (name) => call[call.indexOf(name) + 1];
     assert.deepEqual([opt("--parent"), opt("--cwd"), claudeOf(call)[2]], ["t9", elsewhere, own]);
   } finally { H.panes = saved; }
+});
+
+await test("switching the comment provider lets any Herdr-supported AI CLI answer diff threads", async () => {
+  const { commentProviders, terminalAnswerAfter } = await import(pathToFileURL(join(lib, "comments.js")).href);
+  const filtered = commentProviders([
+    { key: "claude", name: "Claude Code", run: ["claude"], installed: true, agent: true },
+    { key: "codex", name: "Codex", run: ["codex", "--no-daemon"], installed: true, agent: true },
+    { key: "antigravity", name: "Antigravity", run: ["agy"], installed: true, agent: true },
+    { key: "cursor", name: "Cursor", run: ["agent"], installed: true, agent: true },
+    { key: "hermes", name: "Hermes", run: ["hermes"], installed: true, agent: true },
+    { key: "grok", name: "Grok", run: ["grok"], installed: false, agent: true },
+    { key: "herdr-web-browser", name: "Browser", run: ["herdr-web-browser"], installed: true, agent: true },
+  ]);
+  assert.deepEqual(filtered.map((p) => p.key), ["claude", "codex", "antigravity", "cursor", "hermes"]);
+  assert.equal(terminalAnswerAfter("\x1b[32m> Why?\nBecause it is clearer.\n>\x1b[0m", "", "Why?"), "Because it is clearer.");
+  assert.equal(terminalAnswerAfter("old output\nFollow up?\nUpdated it.\n❯ ", "old output\n", "Follow up?"), "Updated it.");
+
+  const savedKnown = H.knownAgents, savedScreens = H.terminalScreens;
+  H.knownAgents = async () => [
+    { key: "claude", name: "Claude Code", run: ["claude"], installed: true, agent: true },
+    { key: "antigravity", name: "Antigravity", run: ["agy"], installed: true, agent: true },
+    { key: "codex", name: "Codex", run: ["codex", "--no-daemon"], installed: true, agent: true },
+    { key: "cursor", name: "Cursor", run: ["agent"], installed: true, agent: true },
+    { key: "hermes", name: "Hermes", run: ["hermes"], installed: true, agent: true },
+  ];
+  H.terminalScreens = {};
+  try {
+    const altRepo = join(base, "alt-provider");
+    mkdirSync(altRepo);
+    const altGit = (...a) => execFileSync("git", a, { cwd: altRepo, env, encoding: "utf8" });
+    altGit("init", "-q", "-b", "main");
+    writeFileSync(join(altRepo, "notes.ts"), "const a = 1;\n");
+    altGit("add", "."); altGit("commit", "-qm", "init");
+    writeFileSync(join(altRepo, "notes.ts"), "const a = 2;\n");
+
+    const view = await openTalk(altRepo);
+    byId(view.render(cx), "gc-diff-provider").handlers.click({}, cx);
+    chooseMenu(H.overlays.at(-1), "Antigravity");
+    view.render(cx); await settle();
+    assert.ok(texts(view.render(cx)).includes("Antigravity"), "header reflects selected provider");
+
+    diffList(view.render(cx)).handlers.item_click(lineKey(view, "const a = 2;"), cx);
+    assert.ok(texts(view.render(cx)).includes("↩ ask Antigravity · ⇧↩ new line · Esc cancel"));
+    view.composer.set_value("Should this be in English?");
+    view.composer.handlers.submit({}, cx);
+    await settle();
+
+    const call = runs().at(-1), c = threadOf(view, "const a = 2;");
+    assert.deepEqual(claudeOf(call), ["agy"], "runs the selected Herdr agent argv");
+    const sent = hcCalls.at(-1);
+    assert.equal(sent[0], "send");
+    assert.equal(sent[1], c.terminal);
+    assert.ok(sent[2].includes("My comment: Should this be in English?"));
+
+    H.terminalScreens[c.terminal] = `My comment: Should this be in English?\nYes, translate it to English.\n❯ `;
+    terminalOf(c).status = "idle";
+    view.pollAnswers(cx); await settle();
+    const rendered = texts(view.render(cx));
+    assert.ok(rendered.includes("Antigravity") && rendered.includes("Yes, translate it to English."));
+
+    await comment(view, threadKeys(view)[0], "Please do it.");
+    assert.deepEqual(hcCalls.at(-1), ["send", c.terminal, "Please do it."]);
+    H.terminalScreens[c.terminal] += "\nPlease do it.\nDone, translated.\n❯ ";
+    terminalOf(c).status = "idle";
+    view.pollAnswers(cx); await settle();
+    assert.ok(texts(view.render(cx)).includes("Done, translated."));
+  } finally {
+    H.knownAgents = savedKnown;
+    H.terminalScreens = savedScreens;
+    delete H.shared["git-changes.commentProvider"];
+  }
 });
 rmSync(base, { recursive: true, force: true });
 console.log(`\n${passed} passed${process.exitCode ? ", some failed" : ""}`);

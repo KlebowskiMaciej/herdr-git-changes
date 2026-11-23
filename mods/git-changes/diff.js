@@ -115,6 +115,7 @@ export class DiffView {
     this.previews = new Map(); this.previewing = false;
     this.uid = `gcd-${Math.random().toString(36).slice(2)}`;
     this.comments = []; this.commentsFile = null; this.saving = Promise.resolve(null);
+    this.providers = C.cachedProviders(null); this.providersOn = undefined;
     this.asking = new Set(); this.reading = new Set(); this.failures = new Map(); this.target = null; this.threadVersion = 0; this.display = null;
     this.menuActions = {}; this.menuSerial = 0; this.pickSeen = shared("git-changes.pick")?.at; this.pressSide = "right";
     this.composer = TextareaState.new({ placeholder: "Comment on this line", rows: 3 });
@@ -158,6 +159,7 @@ export class DiffView {
     this.item = e.item; this.root = e.source.root; this.on = e.source.on ?? null;
     this.clearRows(); this.offset = 0; this.error = null; this.target = null; this.changed();
     if (this.root !== this.watched && !this.on) this.watch(this.root, cx);
+    if (this.on !== this.providersOn) this.refreshProviders(this.on, cx);
     if (repository !== this.repository) this.loadThreads(repository, cx);
     this.reload(cx);
   }
@@ -165,6 +167,33 @@ export class DiffView {
   // --- comment threads --------------------------------------------------------
 
   changed() { this.threadVersion++; }
+
+  refreshProviders(on, cx) {
+    this.providersOn = on;
+    this.providers = C.cachedProviders(on);
+    cx.spawn(async (cx) => {
+      const list = await C.loadProviders(on);
+      if (this.providersOn !== on) return;
+      this.providers = list; this.changed(); cx.notify();
+    });
+  }
+
+  selectedProvider() { return C.resolveProvider(C.getProvider(), this.providers); }
+
+  composerProvider() {
+    const existing = this.target?.id ? this.commentById(this.target.id) : null;
+    if (existing?.provider) return { key: existing.provider, name: existing.providerName || C.resolveProvider(existing.provider, this.providers).name };
+    return this.selectedProvider();
+  }
+
+  providerMenu(cx) {
+    const current = this.selectedProvider();
+    this.menu(this.providers.map((p) => ({
+      label: p.key === current.key ? `${p.name} ✓` : p.name,
+      run: () => { C.setProvider(p.key); this.changed(); },
+    })));
+    cx.notify();
+  }
 
   commentById(id) { return this.comments.find((c) => c.id === id) ?? null; }
 
@@ -226,7 +255,8 @@ export class DiffView {
   ask(id, cx) {
     const comment = this.commentById(id);
     if (!comment || this.asking.has(id)) return;
-    const source = { root: this.root, on: this.on, space: this.space, taken: new Set(this.comments.map((c) => c.session).filter(Boolean)) };
+    const provider = comment.provider ?? this.selectedProvider().key;
+    const source = { root: this.root, on: this.on, space: this.space, provider, providers: this.providers, taken: new Set(this.comments.map((c) => c.session).filter(Boolean)) };
     const file = this.commentsFile;
     this.asking.add(id); this.failures.delete(id); this.changed();
     cx.spawn(async (cx) => {
@@ -243,7 +273,7 @@ export class DiffView {
     if (statuses !== this.statuses) { this.statuses = statuses; this.changed(); cx.notify(); }
     for (const comment of this.comments) {
       const id = comment.id, session = C.sessionTerminal(comment, list);
-      if (!C.awaitsAnswer(comment) || !comment.session || this.asking.has(id) || this.reading.has(id) || this.failures.has(id)) continue;
+      if (!C.awaitsAnswer(comment) || !C.hasSession(comment) || this.asking.has(id) || this.reading.has(id) || this.failures.has(id)) continue;
       if (session?.status === "working" || session?.status === "blocked") continue;
       this.readAnswer(comment, Boolean(session), cx);
     }
@@ -255,7 +285,7 @@ export class DiffView {
     cx.spawn(async (cx) => {
       try {
         const text = await C.readAnswer(comment, on);
-        if (text) this.save(C.withMessage(id, { from: "claude", text, at: Date.now() }), cx, file);
+        if (text) this.save(C.withMessage(id, { from: comment.provider || C.DEFAULT_PROVIDER, text, at: Date.now() }), cx, file);
         else if (!running) this.failures.set(id, "Its session ended without an answer · right-click → Ask again");
       } catch (e) { this.failures.set(id, String(e?.message ?? e)); }
       finally { this.reading.delete(id); this.changed(); cx.notify(); }
@@ -411,6 +441,16 @@ export class DiffView {
     return this.toggleGroup(t, [cell("changes", "diff", "Changes", false), cell("preview", "eye", "Preview", true)]);
   }
 
+  providerButton(t) {
+    const current = this.selectedProvider();
+    return h_flex().id("gc-diff-provider").h(26).px(8).gap(4).flex_none().items_center().rounded(7).border_1().border_color(t.border)
+      .cursor_pointer().text_size(11).text_color(t.muted).tooltip("Review comment agent")
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .on_click((_e, cx) => this.providerMenu(cx))
+      .child(svg(icon("message-square")).size(11).flex_none())
+      .child(div().child(current.name));
+  }
+
   header(t, layout) {
     const add = this.added, del = this.removed;
     const what = this.item.area === "commit" ? `Commit ${this.item.short} · ${this.item.author} · ${this.item.when}`
@@ -423,6 +463,7 @@ export class DiffView {
         .when(add > 0, (e) => e.child(div().text_size(11.5).text_color(t.ansi2).child(`+${add}`)))
         .when(del > 0, (e) => e.child(div().text_size(11.5).text_color(t.ansi1).child(`−${del}`)))
         .when(isMarkdownFile(this.item), (e) => e.child(this.previewToggle(t)))
+        .child(this.providerButton(t))
         .child(this.toggle(t, layout))
         .child(h_flex().id("gc-diff-close").size(24).items_center().justify_center().rounded(5).cursor_pointer().text_color(t.muted).tooltip("Close")
           .hover((s) => s.bg(t.hover).text_color(t.foreground))
@@ -588,23 +629,28 @@ export class DiffView {
   threadRow(entry, t) {
     const columns = this.cardColumns();
     const tones = { you: t.foreground, claude: t.foreground, dim: t.dim, error: t.ansi1 };
+    const toneOf = (tone) => tones[tone] ?? t.foreground;
     const text = (b) => (b.spinner
-      ? h_flex().h(LINE).gap(6).items_center().text_color(tones[b.tone])
+      ? h_flex().h(LINE).gap(6).items_center().text_color(toneOf(b.tone))
         .child(div().w(12).flex_none().text_color(t.accent).frames(SPINNER, SPINNER_MS)).child(b.text)
       : b.reply
         ? div().h(LINE).px(6).flex().items_center().rounded(4).border_1().border_color(t.border).bg(t.background).cursor_text()
           .text_size(11).text_color(t.dim).child(b.text)
-        : div().line_height(`${LINE}px`).text_color(tones[b.tone]).when(Boolean(b.single), (e) => e.truncate()).child(b.text));
+        : div().line_height(`${LINE}px`).text_color(toneOf(b.tone)).when(Boolean(b.single), (e) => e.truncate()).child(b.text));
     const blocks = this.blocksOf(entry).map((b) => v_flex().flex_none().h(C.blockLines(b, columns) * LINE).overflow_hidden()
-      .when(Boolean(b.label), (e) => e.child(div().h(LINE).flex_none().text_size(11).font_semibold().text_color(b.label === "Claude" ? t.accent : t.muted).child(b.label)))
+      .when(Boolean(b.label), (e) => e.child(div().h(LINE).flex_none().text_size(11).font_semibold().text_color(b.label !== "You" ? t.accent : t.muted).child(b.label)))
       .child(text(b)));
     return this.cardRow(this.threadHeight(entry), v_flex().border_color(t.border).bg(t.raised).children(blocks));
   }
 
   composeRow(t) {
+    const provider = this.composerProvider();
+    const hint = C.isClaude(provider.key)
+      ? "↩ ask a copy of your Claude Code session · ⇧↩ new line · Esc cancel"
+      : `↩ ask ${provider.name} · ⇧↩ new line · Esc cancel`;
     return this.cardRow(COMPOSE_HEIGHT, v_flex().border_color(t.accent).bg(t.background)
       .child(Textarea.new(this.composer).w_full().h(COMPOSE_INPUT).text_size(12).text_color(t.foreground).font_family(mono()))
-      .child(div().h(LINE).flex_none().truncate().text_size(11).text_color(t.dim).child("↩ ask a copy of your Claude Code session · ⇧↩ new line · Esc cancel")));
+      .child(div().h(LINE).flex_none().truncate().text_size(11).text_color(t.dim).child(hint)));
   }
 
   rowView(row, t, layout, key) {

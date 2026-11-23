@@ -1,20 +1,27 @@
-// Local review comments on diff lines, each one a thread answered by a copy of
-// the Claude Code session working in the repository.
+// Local review comments on diff lines, each one a thread answered by an AI
+// coding agent: by default a copy of the Claude Code session working in the
+// repository, or any other AI CLI installed and supported by Herdr (Codex,
+// Antigravity, Cursor, Hermes, Gemini, OpenCode, Pi, etc.).
 //
 // A comment is pinned to a line by its file, its text and its number, so it
 // follows the line when lines above it come or go. Comments live in the
 // repository's git folder (git-changes-comments.json), never in the worktree
 // and never on GitHub or GitLab.
 //
-// The first question forks the Claude Code session of the repository into an
-// interactive session of its own, started as a sub-agent of the original's
-// terminal (`hc run --parent`, `claude --resume <id> --fork-session`) in the
-// original's folder: it has the project's settings and permissions, can do the
-// work it is asked for, and the original is left as it was. Its answers are
-// read back from its session file; replies are typed into its terminal.
-import { exec, hc, readTextFile, writeTextFile, panes, spaces, terminals } from "herdr";
+// For Claude Code, the first question forks the repository's Claude Code
+// session into an interactive session of its own (`hc run --parent`,
+// `claude --resume <id> --fork-session`) in the original's folder, reads
+// answers from its session file, and types replies into its terminal.
+// For other Herdr-supported AI CLIs, the thread starts the chosen CLI in a
+// background `hc` terminal, sends the prompt via `hc send`, and reads answers
+// back via `hc read`.
+import { exec, hc, knownAgents, readTextFile, writeTextFile, panes, spaces, terminals, shared, setShared } from "herdr";
 
 export const COMMENTS_FILE = "git-changes-comments.json";
+export const DEFAULT_PROVIDER = "claude";
+const PROVIDER_SHARED_KEY = "git-changes.commentProvider";
+const DEFAULT_AGENT = { key: "claude", name: "Claude Code", run: ["claude"] };
+const IGNORED_AGENTS = new Set(["herdr-web-browser"]);
 const FORK_PREFIX = "c0ffee00";
 const FORK_LABEL = "git-changes";
 const FORK_NAME = "review-";
@@ -33,13 +40,37 @@ for d in $dirs; do for f in "$d"/*.jsonl; do [ -f "$f" ] && set -- "$@" "$f"; do
 [ "$#" -gt 0 ] && ls -t -- "$@"`;
 const READ_SESSION_END = `cd ${CLAUDE_PROJECTS} && tail -c 1000000 -- "$1/$2.jsonl"`;
 const REMOVE_SESSION =`cd ${CLAUDE_PROJECTS} 2>/dev/null && rm -rf -- "$1/$2.jsonl" "$1/$2"`;
+const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+
+export const isClaude = (provider) => !provider || provider === DEFAULT_PROVIDER;
+
+/** Normalizes Herdr's `knownAgents()` list into selectable review-comment providers, always keeping Claude Code available. */
+export function commentProviders(list = []) {
+  const seen = new Set(), out = [];
+  for (const a of Array.isArray(list) ? list : []) {
+    if (!a?.key || !a?.name || !Array.isArray(a.run) || !a.run.length) continue;
+    if (a.installed === false || a.agent === false || a.shell || IGNORED_AGENTS.has(a.key) || seen.has(a.key)) continue;
+    seen.add(a.key);
+    out.push({ key: a.key, name: a.name, run: a.run });
+  }
+  if (!seen.has(DEFAULT_PROVIDER)) out.unshift(DEFAULT_AGENT);
+  return out;
+}
+
+export const cachedProviders = (on) => commentProviders(shared("new-menu.agents")?.[on ?? ""] ?? []);
+export const loadProviders = async (on) => commentProviders(await knownAgents({ on }).catch(() => shared("new-menu.agents")?.[on ?? ""] ?? []));
+export const getProvider = () => shared(PROVIDER_SHARED_KEY) || DEFAULT_PROVIDER;
+export const setProvider = (key) => setShared(PROVIDER_SHARED_KEY, key || DEFAULT_PROVIDER);
+export const resolveProvider = (key, providers = [DEFAULT_AGENT]) => providers.find((p) => p.key === key) ?? providers.find((p) => p.key === DEFAULT_PROVIDER) ?? DEFAULT_AGENT;
+export const assistantLabel = (comment) => (isClaude(comment?.provider) ? "Claude" : comment.providerName || comment.provider);
+export const hasSession = (comment) => Boolean(comment?.session || (!isClaude(comment?.provider) && comment?.terminal));
 
 export const isLine = (row) => LINE_KINDS.has(row?.kind) && Boolean(row.path);
 export const linesOf = (row) => (row.kind === "pair" ? [...new Set([row.left, row.right])].filter(isLine) : isLine(row) ? [row] : []);
 export const anchorOf = (row) => ({ path: row.path, kind: row.kind, line: row.number, text: row.text });
 export const isAnchor = (row, anchor) => isLine(row) && row.path === anchor.path && row.kind === anchor.kind && row.number === anchor.line && row.text === anchor.text;
 const lastFrom = (comment, from) => [...comment.thread].reverse().find((m) => m.from === from)?.text ?? null;
-export const lastAnswer = (comment) => lastFrom(comment, "claude");
+export const lastAnswer = (comment) => [...comment.thread].reverse().find((m) => m.from !== "you")?.text ?? null;
 export const awaitsAnswer = (comment) => comment.thread.at(-1)?.from === "you";
 
 /** Gives each diff line the path of its file: the item's own path, or the latest file header above it. */
@@ -103,13 +134,13 @@ export function wrappedLines(text, columns) {
  * session's terminal record, if it runs.
  */
 export function threadBlocks(comment, { asking = false, failure = null, orphan = false, replying = false, session = null } = {}) {
-  const blocks = [];
+  const blocks = [], label = assistantLabel(comment), claude = isClaude(comment.provider);
   if (orphan) blocks.push({ tone: "dim", text: `Line ${comment.line} is no longer in this diff: ${comment.text.trim()}`, single: true });
-  for (const m of comment.thread) blocks.push({ label: m.from === "you" ? "You" : "Claude", tone: m.from, text: m.text });
-  if (asking) blocks.push({ label: "Claude", tone: "dim", text: comment.session ? "Sending…" : "Starting a copy of the session…", spinner: true });
+  for (const m of comment.thread) blocks.push({ label: m.from === "you" ? "You" : label, tone: m.from, text: m.text });
+  if (asking) blocks.push({ label, tone: "dim", text: hasSession(comment) ? "Sending…" : claude ? "Starting a copy of the session…" : `Starting ${label}…`, spinner: true });
   else if (failure) blocks.push({ tone: "error", text: failure });
   else if (awaitsAnswer(comment) && session?.status === "blocked") blocks.push({ tone: "error", text: "Waiting for you in its session · right-click → Open session" });
-  else if (awaitsAnswer(comment)) blocks.push({ label: "Claude", tone: "dim", text: "Thinking…", spinner: true });
+  else if (awaitsAnswer(comment)) blocks.push({ label, tone: "dim", text: "Thinking…", spinner: true });
   else if (!replying) blocks.push({ tone: "dim", text: "Reply…", single: true, reply: true });
   if (session) blocks.push({ tone: "dim", text: `Session ${session.name} is open · right-click → Open session`, single: true });
   return blocks;
@@ -230,15 +261,86 @@ async function startSession(comment, { cwd, on, parent }, claudeArgs, prompt) {
   return on && !address.includes("/") ? `${on}/${address}` : address;
 }
 
+/** Strips terminal escape sequences and normalizes newlines. */
+export const stripAnsi = (text) => String(text ?? "").replace(ANSI_RE, "").replace(/\r\n?/g, "\n");
+
+const PROMPT_CHROME = /^\s*[>$❯›%#]\s*$/;
+
+/** Extracts the new text a non-Claude CLI terminal printed after `baseline` (and after the echoed `question`), or null if none yet. */
+export function terminalAnswerAfter(screen, baseline, question) {
+  const clean = stripAnsi(screen), base = stripAnsi(baseline);
+  let tail = base && clean.startsWith(base) ? clean.slice(base.length) : clean;
+  if (question) {
+    const marker = question.split("\n").map((l) => l.trim()).filter(Boolean).at(-1);
+    if (marker) {
+      const idx = tail.lastIndexOf(marker);
+      if (idx >= 0) tail = tail.slice(idx + marker.length);
+    }
+  }
+  const lines = tail.split("\n");
+  while (lines.length && (!lines[0].trim() || PROMPT_CHROME.test(lines[0]))) lines.shift();
+  while (lines.length && (!lines.at(-1).trim() || PROMPT_CHROME.test(lines.at(-1)))) lines.pop();
+  const out = lines.join("\n").trim();
+  return out || null;
+}
+
+function providerPrompt(comment, question, recap = false) {
+  if (!recap) return `${SESSION_STYLE}\n\n${questionPrompt(comment, question)}`;
+  const history = comment.thread.slice(0, -1).map((m) => `${m.from === "you" ? "User" : assistantLabel(comment)}: ${m.text}`).join("\n");
+  return [SESSION_STYLE, questionPrompt(comment, comment.thread[0]?.text ?? question), history ? `Previous replies:\n${history}` : "", `Follow-up: ${question}`].filter(Boolean).join("\n\n");
+}
+
+function parentForProvider(providerKey, root, space) {
+  const tabs = new Set(spaces().find((s) => s.id === space)?.tabs.map((t) => t.id) ?? []), forks = forkTerminals();
+  const matches = panes().filter((p) => (p.program?.key === providerKey || p.app === providerKey) && p.cwd && p.terminal && !forks.has(p.terminal));
+  const pane = matches.find((p) => tabs.has(p.tab)) ?? matches.find((p) => isInside(root, p.cwd)) ?? null;
+  return { cwd: pane?.cwd ?? root, parent: pane?.terminal ?? null };
+}
+
+/** Starts any Herdr-supported AI CLI in a background terminal and sends it `prompt`. */
+async function startProviderSession(comment, { cwd, on, parent }, runArgs, prompt) {
+  const r = await hc(["run", "--bg", "--json", "--cwd", cwd, ...(on ? ["--on", on] : []),
+    "--name", sessionName(comment), "--label", `${FORK_LABEL}=${comment.id}`, "--no-notify", "--outlive-parent",
+    ...(parent ? ["--parent", parent] : ["--no-parent"]),
+    "--", ...runArgs]);
+  if (r.code !== 0) throw failed(r, "hc run");
+  const raw = JSON.parse(r.stdout).address;
+  const address = on && !raw.includes("/") ? `${on}/${raw}` : raw;
+  const sent = await hc(["send", address, prompt]);
+  if (sent.code !== 0) throw failed(sent, "hc send");
+  return address;
+}
+
+async function readTerminalScreen(terminal) {
+  const r = await hc(["read", "--lines", "200", terminal]);
+  return r.code === 0 ? r.stdout : "";
+}
+
 /**
- * Gets the thread's open question to its session: typed into the session's
- * terminal while it runs, else in a restarted session (`--resume` of the
- * thread's copy), or, on a thread's first question, in a new interactive fork of
- * the original session, started as its sub-agent. Resolves with the fields the
- * comment gets: `{ session, cwd, terminal }`, or `{ terminal }`, or nothing.
+ * Gets the thread's open question to its session:
+ * - Claude Code: typed into its live terminal, resumed (`--resume`), or forked
+ *   from the repository's Claude Code session as a sub-agent.
+ * - Any other Herdr-supported AI CLI: typed into its live terminal (recording a
+ *   read baseline first), or started in a background `hc` terminal with `hc send`.
  */
 export async function deliver(comment, source) {
-  const question = lastFrom(comment, "you"), { root, on } = source;
+  const question = lastFrom(comment, "you"), { root, on, space } = source;
+  const providerKey = comment.provider ?? source.provider ?? DEFAULT_PROVIDER;
+  if (!isClaude(providerKey)) {
+    const provider = comment.providerRun?.length
+      ? { key: providerKey, name: comment.providerName || providerKey, run: comment.providerRun }
+      : resolveProvider(providerKey, source.providers);
+    if (sessionTerminal(comment)) {
+      const readBaseline = await readTerminalScreen(comment.terminal);
+      const r = await hc(["send", comment.terminal, question]);
+      if (r.code !== 0) throw failed(r, "hc send");
+      return { readBaseline };
+    }
+    const recap = comment.thread.length > 1;
+    const { cwd, parent } = comment.cwd ? { cwd: comment.cwd, parent: comment.parent ?? null } : parentForProvider(provider.key, root, space);
+    const terminal = await startProviderSession(comment, { cwd, on, parent }, provider.run, providerPrompt(comment, question, recap));
+    return { provider: provider.key, providerName: provider.name, providerRun: provider.run, cwd, terminal, parent, readBaseline: "" };
+  }
   if (sessionTerminal(comment)) {
     const r = await hc(["send", comment.terminal, question]);
     if (r.code !== 0) throw failed(r, "hc send");
@@ -255,6 +357,11 @@ export async function deliver(comment, source) {
 
 /** The session's answer to the thread's open question, or null while it has none. */
 export async function readAnswer(comment, on) {
+  if (!isClaude(comment.provider)) {
+    if (!comment.terminal) return null;
+    const screen = await readTerminalScreen(comment.terminal);
+    return terminalAnswerAfter(screen, comment.readBaseline ?? "", lastFrom(comment, "you"));
+  }
   const since = [...comment.thread].reverse().find((m) => m.from === "you")?.at ?? 0;
   const dir = projectDir(comment.cwd ?? "");
   if (!SESSION_ID.test(comment.session ?? "") || !PROJECT_DIR.test(dir)) return null;

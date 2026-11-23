@@ -190,6 +190,11 @@ the next click.
   knows; the session itself does not change. A spinner shows while it works,
   then its answer (the last text of its turn) appears in the thread. It is
   asked to keep each answer to a sentence or two.
+- **Switch agent provider:** click the agent button in the diff tab header
+  (defaults to **Claude Code**) to pick any other installed AI CLI supported by
+  Herdr (Codex, Antigravity, Cursor, Hermes, Gemini, OpenCode, Pi, etc.). Non-Claude
+  providers run in a background `hc` terminal (`hc run` / `hc send` / `hc read`),
+  while Claude Code keeps its native `--fork-session` behavior.
 - **Which session is copied:** the newest session of the first of these that
   has one: the Claude Code terminals in the diff's space, the Claude Code
   terminals inside the repository, then the repository and its main checkout
