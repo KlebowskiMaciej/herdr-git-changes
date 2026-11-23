@@ -182,14 +182,16 @@ export class DiffView {
 
   composerProvider() {
     const existing = this.target?.id ? this.commentById(this.target.id) : null;
-    if (existing?.provider) return { key: existing.provider, name: existing.providerName || C.resolveProvider(existing.provider, this.providers).name };
-    return this.selectedProvider();
+    const selected = this.selectedProvider();
+    if (!existing) return selected;
+    const key = C.providerKeyOf(existing, selected.key);
+    return { key, name: existing.providerName || C.resolveProvider(key, this.providers).name };
   }
 
   providerMenu(cx) {
     const current = this.selectedProvider();
     this.menu(this.providers.map((p) => ({
-      label: p.key === current.key ? `${p.name} ✓` : p.name,
+      label: p.name, check: p.key === current.key,
       run: () => { C.setProvider(p.key); this.changed(); },
     })));
     cx.notify();
@@ -255,7 +257,7 @@ export class DiffView {
   ask(id, cx) {
     const comment = this.commentById(id);
     if (!comment || this.asking.has(id)) return;
-    const provider = comment.provider ?? this.selectedProvider().key;
+    const provider = C.providerKeyOf(comment, this.selectedProvider().key);
     const source = { root: this.root, on: this.on, space: this.space, provider, providers: this.providers, taken: new Set(this.comments.map((c) => c.session).filter(Boolean)) };
     const file = this.commentsFile;
     this.asking.add(id); this.failures.delete(id); this.changed();
@@ -285,7 +287,7 @@ export class DiffView {
     cx.spawn(async (cx) => {
       try {
         const text = await C.readAnswer(comment, on);
-        if (text) this.save(C.withMessage(id, { from: comment.provider || C.DEFAULT_PROVIDER, text, at: Date.now() }), cx, file);
+        if (text) this.save(C.withMessage(id, { from: C.providerKeyOf(comment, C.DEFAULT_PROVIDER), text, at: Date.now() }), cx, file);
         else if (!running) this.failures.set(id, "Its session ended without an answer · right-click → Ask again");
       } catch (e) { this.failures.set(id, String(e?.message ?? e)); }
       finally { this.reading.delete(id); this.changed(); cx.notify(); }

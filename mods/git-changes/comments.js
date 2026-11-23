@@ -44,6 +44,9 @@ const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 
 export const isClaude = (provider) => !provider || provider === DEFAULT_PROVIDER;
 
+/** The agent a thread belongs to: the one it started with, else Claude Code once its session exists, else the selected one. */
+export const providerKeyOf = (comment, selectedKey) => comment.provider ?? (comment.session ? DEFAULT_PROVIDER : selectedKey);
+
 /** Normalizes Herdr's `knownAgents()` list into selectable review-comment providers, always keeping Claude Code available. */
 export function commentProviders(list = []) {
   const seen = new Set(), out = [];

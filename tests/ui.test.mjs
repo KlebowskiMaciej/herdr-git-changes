@@ -1463,6 +1463,12 @@ await test("switching the comment provider lets any Herdr-supported AI CLI answe
     delete H.shared["git-changes.commentProvider"];
   }
 });
+await test("a thread keeps the agent it started with when another one is selected later", async () => {
+  const { providerKeyOf } = await import(pathToFileURL(join(lib, "comments.js")).href);
+  assert.equal(providerKeyOf({ session: "abc" }, "codex"), "claude", "a Claude Code thread stays with Claude Code");
+  assert.equal(providerKeyOf({ provider: "codex", terminal: "t1" }, "cursor"), "codex", "another agent's thread stays with it");
+  assert.equal(providerKeyOf({}, "cursor"), "cursor", "a thread not yet asked takes the selected agent");
+});
 rmSync(base, { recursive: true, force: true });
 console.log(`\n${passed} passed${process.exitCode ? ", some failed" : ""}`);
 clearInterval(keepAlive);
