@@ -31,8 +31,9 @@ export function showForgeInTab(spaceId, item, source) {
   else if (!opening) run("tab.new", { space: spaceId, name, mod: "git-changes", props: { role: "forge", space: spaceId } });
 }
 
-function openExternal(url) {
-  if (!url) return;
+/** Opens an http(s) link in the browser; any other link, such as a CI check's own scheme, is ignored. */
+export function openExternal(url) {
+  if (!/^https?:\/\//i.test(String(url ?? ""))) return;
   const cmd = appWindow().platform === "macos" ? "open" : "xdg-open";
   exec(cmd, [url]).catch(() => null);
 }

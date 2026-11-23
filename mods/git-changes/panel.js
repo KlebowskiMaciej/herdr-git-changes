@@ -14,14 +14,14 @@
 // both panels refresh after either acts.
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, TextareaState, Textarea, InputState, Input, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
-import { spaces, panes, focused, exec, watchFolder, theme, settings, notify, shared, setShared, openOverlay, run, props, nextCommand, window as appWindow } from "herdr";
+import { spaces, panes, focused, exec, watchFolder, theme, settings, notify, shared, setShared, openOverlay, run, props, nextCommand, readTextFile, appHome, window as appWindow } from "herdr";
 import * as G from "./git.js";
 import * as Apps from "./apps.js";
 import * as AI from "./aimsg.js";
 import * as F from "./forge.js";
 import { icon, menuHeight } from "./menu.js";
 import { showInTab, shownIn, shownSource, getLayout, setLayout } from "./diff.js";
-import { showForgeInTab } from "./forge-view.js";
+import { showForgeInTab, openExternal } from "./forge-view.js";
 import { History } from "./history.js";
 import { ROW, OUTER, START, PAD, INDENT, BOX, ACTION, COUNT, COUNT_GAP, BRANCH, FOLDABLE, buildRows, buildBranchRows, filesInside, matchingPath, isFolded, stepIndex, zoneAt } from "./rows.js";
 
@@ -113,7 +113,7 @@ export class Panel {
     this.collapsed = JSON.parse(localStorage.getItem("collapsed") ?? "{}");
     this.signoff = localStorage.getItem("signoff") === "1";
     try { this.ai = AI.normalizeAi(JSON.parse(localStorage.getItem("ai") ?? "null")); } catch { this.ai = AI.normalizeAi(null); }
-    this.aiBusy = false;
+    this.aiBusy = false; this.aiOpen = false;
     this.message = ""; this.menuActions = {}; this.menuSerial = 0;
     this.pickSeen = shared("git-changes.pick")?.at; this.seenChange = shared("git-graph.changed");
     this.handle = cx.focus_handle();
@@ -159,7 +159,6 @@ export class Panel {
     this.ci = null; this.ciKey = null; this.ciAt = 0; this.ciLoading = false;
     this.limited = false; this.model = null; this.signature = null; this.press = null;
     this.repo = null; this.repoModel = null; this.compareBase = null; this.compareHead = null;
-    this.compareBase = null; this.compareHead = null;
   }
 
   /** Keeps the Repo tab's new read; false when it's the same as the last one. */
@@ -333,7 +332,7 @@ export class Panel {
   }
 
   ciMenu(cx) {
-    const ci = this.ci, openUrl = (url) => { if (url) exec(appWindow().platform === "macos" ? "open" : "xdg-open", [url]).catch(() => null); };
+    const ci = this.ci;
     const jobs = (ci?.jobs ?? []).map((j) => ({
       label: j.name,
       icon: j.state === "pass" ? "check" : j.state === "fail" ? "x" : j.state === "running" ? "refresh" : "commit",
@@ -345,7 +344,7 @@ export class Panel {
     this.menu([
       ...(jobs.length ? jobs : [{ label: ci?.summary || "No CI runs", disabled: true }]),
       { separator: true },
-      ...(firstUrl ? [{ label: "Open in browser ↗", icon: "cloud", run: () => openUrl(firstUrl) }] : []),
+      ...(firstUrl ? [{ label: "Open in browser ↗", icon: "cloud", run: () => openExternal(firstUrl) }] : []),
       { label: "Refresh CI status", icon: "refresh", run: (cx) => this.refreshBranchCi(cx, true) },
     ], cx);
   }
@@ -390,6 +389,21 @@ export class Panel {
     cx.notify();
   }
 
+  async loadCommitTemplate(root, on) {
+    const cfg = await exec("git", [...G.READ, "config", "--get", "commit.template"], { cwd: root, on }).catch(() => null);
+    const configured = cfg?.code === 0 ? cfg.stdout.trim() : "";
+    const candidates = [
+      ...(configured ? [configured.startsWith("/") ? configured : `${root}/${configured}`] : []),
+      ...AI.TEMPLATE_PATHS.map((p) => `${root}/${p}`),
+      ...(on ? [] : [`${appHome()}/mods/git-changes/commit-template.md`]),
+    ];
+    for (const path of candidates) {
+      const text = await readTextFile(path, { on }).catch(() => null);
+      if (text?.trim()) return text;
+    }
+    return "";
+  }
+
   // Asks the chosen agent's CLI for a message from the staged diff (or every tracked
   // change when nothing is staged) and drops it into the box. Never commits.
   generateMessage(cx) {
@@ -404,8 +418,11 @@ export class Panel {
         const diff = await exec("git", [...G.READ, ...AI.diffArgs(mode, hasHead)], { cwd: root, on });
         if (diff.code !== 0) throw new Error(G.gitError(diff));
         if (!diff.stdout.trim()) throw new Error("No changes to describe");
-        const log = hasHead ? await exec("git", [...G.READ, "log", "-5", "--format=%s"], { cwd: root, on }).catch(() => null) : null;
-        const prompt = AI.buildPrompt(diff.stdout, { recent: log?.code === 0 ? log.stdout.trim() : "" });
+        const [log, templateText] = await Promise.all([
+          hasHead ? exec("git", [...G.READ, "log", "-5", "--format=%s"], { cwd: root, on }).catch(() => null) : null,
+          ai.template === "repo" ? this.loadCommitTemplate(root, on) : "",
+        ]);
+        const prompt = AI.buildPrompt(diff.stdout, { recent: log?.code === 0 ? log.stdout.trim() : "", template: ai.template ?? "", templateText });
         const r = await exec(AI.AGENTS[ai.agent].command, AI.agentArgs(ai, prompt), { cwd: root, on, timeout: 120000 });
         if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").slice(-2).join(" ") || `${ai.agent} exited ${r.code}`);
         const text = AI.cleanMessage(r.stdout);
@@ -421,15 +438,48 @@ export class Panel {
     cx.notify();
   }
 
+  aiAgentMenu(cx) {
+    this.menu(Object.entries(AI.AGENTS).map(([id, v]) => ({
+      label: v.label, check: this.ai.agent === id,
+      run: (cx) => this.setAi({ agent: id, model: "", effort: "" }, cx),
+    })), cx);
+  }
+
+  aiModelMenu(cx) {
+    this.menu(AI.AGENTS[this.ai.agent].models.map((m) => ({
+      label: m || "default", check: this.ai.model === m,
+      run: (cx) => this.setAi({ model: m }, cx),
+    })), cx);
+  }
+
   aiMenu(cx) {
-    const a = AI.AGENTS[this.ai.agent];
-    this.menu([
-      ...Object.entries(AI.AGENTS).map(([id, v]) => ({ label: v.label, check: this.ai.agent === id, run: (cx) => this.setAi({ agent: id, model: AI.AGENTS[id].models[0], effort: "" }, cx) })),
-      { separator: true },
-      ...a.models.map((m) => ({ label: `Model: ${m || "default"}`, check: this.ai.model === m, run: (cx) => this.setAi({ model: m }, cx) })),
-      { separator: true },
-      ...a.efforts.map((e) => ({ label: `Effort: ${e || "default"}`, check: this.ai.effort === e, run: (cx) => this.setAi({ effort: e }, cx) })),
-    ], cx);
+    this.aiOpen = !this.aiOpen;
+    cx.notify();
+  }
+
+  aiDrawer(t) {
+    const a = AI.AGENTS[this.ai.agent], tpl = this.ai.template ?? "";
+    const pill = (id, label, active, onClick) => div().id(id).h(20).px(6).flex().items_center().rounded(4).cursor_pointer().text_size(11)
+      .text_color(active ? t.foreground : t.muted).when(active, (e) => e.bg(t.selected).border_1().border_color(t.accent + "66"))
+      .hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => onClick(cx)).child(label);
+    const drop = (id, label, onClick) => h_flex().id(id).h(22).px(7).gap(4).items_center().rounded(5).border_1().border_color(t.border).bg(t.background)
+      .cursor_pointer().text_size(11.5).text_color(t.foreground).hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => onClick(cx))
+      .child(div().truncate().child(label))
+      .child(svg(icon("chevron-down")).size(10).flex_none().text_color(t.dim));
+    return v_flex().id("ai-drawer").mx(10).p(8).gap(6).rounded(8).border_1().border_color(t.border).bg(t.raised)
+      .child(h_flex().gap(6).items_center()
+        .child(div().w(54).flex_none().text_size(11).text_color(t.dim).child("Agent"))
+        .child(drop("ai-pick-agent", a.label, (cx) => this.aiAgentMenu(cx))))
+      .when(a.models.length > 1, (e) => e.child(h_flex().gap(6).items_center()
+        .child(div().w(54).flex_none().text_size(11).text_color(t.dim).child("Model"))
+        .child(drop("ai-pick-model", this.ai.model || "default", (cx) => this.aiModelMenu(cx)))))
+      .when(a.efforts.length > 1, (e) => e.child(h_flex().gap(6).items_center()
+        .child(div().w(54).flex_none().text_size(11).text_color(t.dim).child("Effort"))
+        .child(h_flex().gap(3).children(a.efforts.map((ef) => pill(`ai-eff-${ef || "def"}`, ef || "auto", this.ai.effort === ef, (cx) => this.setAi({ effort: ef }, cx)))))))
+      .child(h_flex().gap(6).items_center()
+        .child(div().w(54).flex_none().text_size(11).text_color(t.dim).child("Template"))
+        .child(h_flex().gap(3).children(Object.entries(AI.TEMPLATES).map(([id, v]) => pill(`ai-tpl-${id || "def"}`, v.label, tpl === id, (cx) => this.setAi({ template: id }, cx))))));
   }
 
   commit(cx, push) {
@@ -1187,7 +1237,7 @@ export class Panel {
         .child(chip("repo-base", this.compareBase || repo?.baseRef || "base", "Choose base branch", "base"))
         .child(div().text_size(11).text_color(t.dim).child("→"))
         .child(chip("repo-head", this.compareHead || "HEAD", "Choose target branch", "head"))
-        .child(div().flex_1().min_w(0).truncate().text_right().text_size(11).text_color(t.dim).child(`${entries.length} files`)))
+        .child(div().flex_1().min_w(0).truncate().text_right().text_size(11).text_color(t.dim).child(`${entries.length} ${entries.length === 1 ? "file" : "files"}`)))
       .child(h_flex().h(30).px(8).gap(4).items_center().border_t(1).border_color(t.border)
         .child(this.iconButton("view-diff-base", "diff", repo?.base ? `Show every change (${repo.base}) in the main area` : "Show every change of the branch",
           (cx) => this.pickBranch({ area: "base" }, cx), t, { label: "View Diff", disabled: !any }))
@@ -1262,12 +1312,13 @@ export class Panel {
     const tip = this.amend ? "Replace the last commit" : mode === "tracked" ? "Nothing staged: commit every tracked change (git commit -a)" : mode === "conflict" ? "Resolve the conflicts first" : "Commit the staged changes · ⌘↩";
     return v_flex().flex_none().gap(8).pt(2).pb(8)
       .child(this.editorBox(t))
+      .when(this.aiOpen, (e) => e.child(this.aiDrawer(t)))
       .child(h_flex().px(10).gap(6).items_center()
         .when(this.amend, (e) => e.child(div().px(6).py(1).rounded(4).bg(t.accent + "22").text_size(11).text_color(t.accent).child("amend")))
         .when(this.signoff, (e) => e.child(div().px(6).py(1).rounded(4).bg(t.raised).text_size(11).text_color(t.muted).child("signoff")))
         .child(div().flex_1())
         .child(this.iconButton("ai-message", "sparkles", `Generate a message with ${AI.AGENTS[this.ai.agent].label}${this.ai.model ? ` (${this.ai.model})` : ""}`, (cx) => this.generateMessage(cx), t, { label: this.aiBusy ? "Writing…" : null, disabled: this.aiBusy || busy || (mode !== "staged" && mode !== "tracked") }))
-        .child(this.iconButton("ai-settings", "sliders", "Choose the agent, model and effort for generated messages", (cx) => this.aiMenu(cx), t))
+        .child(this.iconButton("ai-settings", "sliders", `AI settings (${AI.AGENTS[this.ai.agent].label}${this.ai.model ? ` · ${this.ai.model}` : ""})`, (cx) => this.aiMenu(cx), t, { active: this.aiOpen }))
         .child(this.split("commit", label, t, { primary: true, enabled: canCommit, tip, onClick: (cx) => this.commit(cx, false), onMenu: (cx) => this.commitOptions(cx) })));
   }
 

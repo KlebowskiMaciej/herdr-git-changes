@@ -25,6 +25,9 @@ picks its own Changes panel, so you point your layouts at this one
   the Changes and Repo tabs.
 - **[Repo](#repo-tab):** every file your branch changed since it left its
   base branch (`main`, `develop`, `release/…`), as a merge request shows it.
+- **[PRs / MRs, Issues and CI](#prs--mrs-issues-and-ci):** optional tabs for a
+  GitHub or GitLab remote, with labels, a detail view and comments, and a CI
+  status chip for the current branch. Needs `gh` or `glab`.
 - **[Diff in the main area](#the-diff-in-the-main-area):** one column or two
   (before | after), syntax colors for TypeScript, JavaScript, C# and HTML, and
   images shown as pictures, before and after.
@@ -128,8 +131,10 @@ request shows it. Staged, unstaged and untracked work stays in Changes.
   View Diff shows all of them at once. Right-click a file or a folder to open
   its folder or copy its path. The arrow keys and the file filter work as in
   Changes.
-- The toolbar shows the lines added and removed, and how many files changed
-  since which base.
+- **Compare:** the two chips at the top of the toolbar pick the base and the
+  target. They start at the detected base and HEAD. Pick any two branches to
+  compare them, and *Auto base* or *Current (HEAD)* to go back.
+- The toolbar shows the lines added and removed, and how many files changed.
 - No checkboxes and no discard here: stage and discard in Changes.
 - Read only while the tab shows, like History.
 
@@ -190,6 +195,11 @@ the next click.
   knows; the session itself does not change. A spinner shows while it works,
   then its answer (the last text of its turn) appears in the thread. It is
   asked to keep each answer to a sentence or two.
+- **Switch agent provider:** click the agent button in the diff tab header
+  (defaults to **Claude Code**) to pick any other installed AI CLI supported by
+  Herdr (Codex, Antigravity, Cursor, Hermes, Gemini, OpenCode, Pi, etc.). Non-Claude
+  providers run in a background `hc` terminal (`hc run` / `hc send` / `hc read`),
+  while Claude Code keeps its native `--fork-session` behavior.
 - **Which session is copied:** the newest session of the first of these that
   has one: the Claude Code terminals in the diff's space, the Claude Code
   terminals inside the repository, then the repository and its main checkout
@@ -223,17 +233,43 @@ the next click.
 - **Generate a message (✨):** asks a coding agent's CLI to write the message
   from the staged diff (every tracked change when nothing is staged) and puts
   it in the box. It never commits, and it doesn't overwrite a message you've
-  typed. The sliders button next to it picks the agent (Claude Code, Hermes or
-  Codex), the model and the effort; the choice is remembered. It runs a fresh
-  one-shot command (`claude -p`, `hermes -z`, `codex exec`) with the diff,
+  typed. The sliders button next to it opens a drawer with the agent (Claude
+  Code, Codex, Hermes, Antigravity, Cursor, Gemini, OpenCode, Pi or Copilot), the
+  model, the effort and the template; the choice is remembered. It runs a fresh
+  one-shot command (`claude -p`, `hermes -z`, `codex exec`, …) with the diff,
   cut to 12,000 characters, and your last five commit subjects in the prompt.
   The agent's CLI must be installed on the repository's machine.
+  The template is *Default* (an imperative subject), *Conventional* (Conventional
+  Commits), or *Repo / SKILL*, which adds the first of these files that has text,
+  cut to 3,000 characters: `git config commit.template`, `.gitmessage`,
+  `.github/commit-template.md`, `.ai/skills/commit/SKILL.md`,
+  `.claude/skills/commit/SKILL.md`, then `commit-template.md` in the mod's folder
+  (this computer only). Without such a file, *Repo / SKILL* acts like *Default*.
 - **Commit or Commit Tracked:** the button commits what's staged. When nothing
   is staged it reads *Commit Tracked* and runs `git commit -a`. Its ⌄ menu has
   Amend (pre-filled with the last message), Signoff, Commit & push, Stash all
   and Uncommit.
 - **The last commit** sits at the bottom with its short hash (click to copy the
   full one), ↶ Uncommit (the changes stay staged) and a jump to History.
+
+### PRs / MRs, Issues and CI
+
+When a remote of the repository is on GitHub or GitLab (cloud or self-hosted),
+the panel gets a **PRs** tab (**MRs** on GitLab) and an **Issues** tab. Nothing
+is stored in the mod: it runs your own `gh` or `glab`, signed in as you.
+
+- **The lists** load when you open the tab. Open and Closed switch the state.
+  A label button filters by label, and so does a click on a label of a card.
+  The filter box searches the number, title, author and labels.
+- **Click a card** to open it in the main area, one tab per space: the
+  description as Markdown, assignees, reviewers with their review state,
+  labels, CI checks, the comments (inline review comments too), and for a PR
+  or an MR its changed files. A box at the end posts a comment (⌘↩).
+- **The CI chip** on the branch row shows the checks of the current commit.
+  Click it for the jobs; a job opens with the end of its log.
+- **Hide them:** the Changes toolbar's *More* button (sliders icon) has *Hide
+  PRs & Issues tabs* (*MRs* on GitLab). The CI chip goes too.
+- Links open only when they start with `http://` or `https://`.
 
 ### History tab
 
@@ -476,7 +512,9 @@ Files in `mods/git-changes/`:
 
 | File | What's in it |
 |---|---|
-| `main.js` | Picks a role from `props.role`: the panel, a menu, or the diff tab (`"diff"`). |
+| `main.js` | Picks a role from `props.role`: the panel, a menu, the diff tab (`"diff"`) or the PR / issue tab (`"forge"`). |
+| `forge.js` | Finds GitHub or GitLab from the remotes, builds the `gh` and `glab` commands, and parses their output. No Herdr imports. |
+| `forge-view.js` | The PR, MR, issue and CI job tab in the main area. |
 | `panel.js` | The panel: reading the repository, every action, the Changes and Repo tabs' virtual lists, their menus, and the commit area. |
 | `rows.js` | The Changes and Repo lists as flat rows, and where a click lands in a row. No Herdr imports. |
 | `images.js` | Copies an image's bytes into Herdr's folder so it can be shown. |
@@ -488,7 +526,7 @@ Files in `mods/git-changes/`:
 | `mermaid.js` | Finds the Mermaid blocks in Markdown and draws each with the Mermaid CLI. |
 | `comments.js` | Comment threads: pinning a comment to its line, saving them in the git folder, and asking a fork of the Claude Code session. |
 | `syntax.js` | Syntax colors: a file's language from its extension, and each diff line split into colored tokens. No Herdr imports. |
-| `aimsg.js` | The generated commit message: the agent, model and effort choices, the prompt, each agent's arguments and the cleanup of its reply. No Herdr imports. |
+| `aimsg.js` | The generated commit message: the agent, model, effort and template choices, the prompt, each agent's arguments and the cleanup of its reply. No Herdr imports. |
 | `menu.js` | The dropdown and right-click menus, shown as popups. |
 | `git.js` | Parsing git's output, the folder tree, pairing lines for two columns, finding the images in a diff, and the argv behind every action. No Herdr imports, so node can test it. |
 
