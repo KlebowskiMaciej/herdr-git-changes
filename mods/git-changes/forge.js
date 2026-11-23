@@ -144,6 +144,7 @@ export function parseGitHubReviews(json) {
       author: loginOf(pr.author),
       assignees: (pr.assignees ?? []).map(loginOf).filter(Boolean),
       reviewers: (pr.reviewRequests ?? []).map((r) => loginOf(r.login ? r : r.requestedReviewer ?? r)).filter(Boolean),
+      labels: (pr.labels ?? []).map((l) => (typeof l === "string" ? l : l.name)).filter(Boolean),
       reviewState: String(pr.reviewDecision || "").toLowerCase(),
       head: pr.headRefName || "",
       base: pr.baseRefName || "",
@@ -166,6 +167,7 @@ export function parseGitLabReviews(json) {
     author: loginOf(mr.author),
     assignees: (mr.assignees ?? (mr.assignee ? [mr.assignee] : [])).map(loginOf).filter(Boolean),
     reviewers: (mr.reviewers ?? []).map(loginOf).filter(Boolean),
+    labels: (mr.labels ?? []).map((l) => (typeof l === "string" ? l : l.name)).filter(Boolean),
     reviewState: mr.approved ? "approved" : "",
     head: mr.source_branch || "",
     base: mr.target_branch || "",
@@ -335,8 +337,8 @@ export function parseGitLabIssueDetail(json, notesJson = "[]") {
 
 // --- CLI command builders ----------------------------------------------------
 
-const GH_PR_LIST_FIELDS = "number,title,state,isDraft,author,assignees,reviewRequests,reviewDecision,headRefName,baseRefName,updatedAt,url,statusCheckRollup,comments";
-const GH_PR_VIEW_FIELDS = `${GH_PR_LIST_FIELDS},body,reviews,files,labels`;
+const GH_PR_LIST_FIELDS = "number,title,state,isDraft,author,assignees,reviewRequests,reviewDecision,headRefName,baseRefName,updatedAt,url,statusCheckRollup,comments,labels";
+const GH_PR_VIEW_FIELDS = `${GH_PR_LIST_FIELDS},body,reviews,files`;
 const GH_ISSUE_FIELDS = "number,title,state,author,assignees,labels,updatedAt,url,comments";
 const GH_RUN_FIELDS = "databaseId,displayTitle,name,status,conclusion,url,workflowName,updatedAt";
 
@@ -443,4 +445,14 @@ export async function loadIssueDetail(execFn, forge, number, opts) {
     runCli(execFn, forge, ["api", `projects/:fullpath/issues/${number}/notes`], opts).catch(() => "[]"),
   ]);
   return parseGitLabIssueDetail(itOut, notesOut);
+}
+
+export async function postComment(execFn, forge, item, body, opts) {
+  const text = String(body ?? "").trim();
+  if (!text) throw new Error("Comment cannot be empty");
+  const n = String(item.number);
+  const args = forge.kind === "github"
+    ? (item.kind === "review" ? ["pr", "comment", n, "--body", text] : ["issue", "comment", n, "--body", text])
+    : (item.kind === "review" ? ["mr", "note", n, "--message", text] : ["issue", "note", n, "--message", text]);
+  await runCli(execFn, forge, args, opts);
 }

@@ -69,20 +69,26 @@ async function baseCandidates(git) {
   }));
 }
 
-/** What the Repo tab lists: every file the branch's commits changed since it left its base, or why there's nothing to compare. */
-async function readBranchFiles(git, status) {
-  const head = status.branch.oid;
+/** What the Repo tab lists: every file changed between base and head (auto-detected base..HEAD, or any two chosen branches). */
+async function readBranchFiles(git, status, { baseOverride = null, headOverride = null } = {}) {
+  let head = status.branch.oid;
+  if (headOverride) {
+    const resolved = await git(["rev-parse", "--verify", headOverride]);
+    if (resolved.code !== 0) return failedRead(`Unknown branch ${headOverride}`);
+    head = resolved.stdout.trim();
+  }
   if (!head) return failedRead("No commits yet");
-  const base = G.nearestBase(await baseCandidates(git), status.branch.head);
+  const base = baseOverride || G.nearestBase(await baseCandidates(git), status.branch.head);
   if (!base) return failedRead("No main, master, develop or release branch to compare with");
-  const found = await git(G.mergeBaseArgs(base));
+  const found = await git(["merge-base", base, head]);
   if (found.code !== 0) return failedRead(`No commit in common with ${base}`, base);
   const mergeBase = found.stdout.trim();
   const [names, stats] = await Promise.all([git(G.baseNameStatusArgs(mergeBase, head)), git(G.baseNumstatArgs(mergeBase, head))]);
   if (names.code !== 0) throw new Error(G.gitError(names));
   const numstat = stats.code === 0 ? stats.stdout : "", entries = G.branchEntries(names.stdout, numstat);
-  return { base, mergeBase, head, entries: entries.slice(0, G.LIMIT), limited: entries.length > G.LIMIT,
-    signature: [base, mergeBase, head, names.stdout, numstat].join("\x1f") };
+  const label = headOverride ? `${base}..${headOverride}` : base;
+  return { base: label, baseRef: base, headRef: headOverride || status.branch.head || "HEAD", mergeBase, head, entries: entries.slice(0, G.LIMIT), limited: entries.length > G.LIMIT,
+    signature: [label, mergeBase, head, names.stdout, numstat].join("\x1f") };
 }
 
 export class Panel {
@@ -93,6 +99,7 @@ export class Panel {
     this.changesScroll = VirtualListScrollHandle.new(); this.repoScroll = VirtualListScrollHandle.new();
     this.cursor = {};
     this.repo = null; this.repoModel = null;
+    this.compareBase = null; this.compareHead = null;
     this.model = null; this.press = null; this.signature = null;
     this.entries = []; this.stashes = []; this.remotes = []; this.last = null;
     this.forge = null; this.showForge = localStorage.getItem("forgeTabs") !== "0";
@@ -151,7 +158,8 @@ export class Panel {
     this.forge = null; this.forgeCache = {}; this.forgeLoading = false; this.forgeError = null;
     this.ci = null; this.ciKey = null; this.ciAt = 0; this.ciLoading = false;
     this.limited = false; this.model = null; this.signature = null; this.press = null;
-    this.repo = null; this.repoModel = null;
+    this.repo = null; this.repoModel = null; this.compareBase = null; this.compareHead = null;
+    this.compareBase = null; this.compareHead = null;
   }
 
   /** Keeps the Repo tab's new read; false when it's the same as the last one. */
@@ -189,7 +197,7 @@ export class Panel {
         // The graph is read only while it shows; switching to it reads it.
         const historyMoved = this.tab === "history" && await this.history.read(git, { changes: s.entries.length, head: s.branch.oid, upstream: s.branch.upstream });
         if (key() !== context) return;
-        const repoRead = this.tab === "repo" ? await readBranchFiles(git, s) : null;
+        const repoRead = this.tab === "repo" ? await readBranchFiles(git, s, { baseOverride: this.compareBase, headOverride: this.compareHead }) : null;
         if (key() !== context) return;
         const repoMoved = Boolean(repoRead) && this.takeRepo(repoRead);
         const signature = [status.stdout, ...stats.map((r) => r.stdout), stash.stdout, remote.stdout, remoteUrls.stdout, last?.stdout ?? "", Math.floor(Date.now() / 60000)].join("\x1f");
@@ -1078,7 +1086,9 @@ export class Panel {
             .child(div().flex_none().text_size(11.5).font_semibold().text_color(it.draft ? t.dim : t.accent).child(`${prefix}${it.number}`))
             .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.foreground).child(it.title))
             .when(Boolean(dot), (e) => e.child(div().flex_none().text_size(11).text_color(dot.color).child(dot.text))))
-          .when(Boolean(meta), (e) => e.child(div().truncate().text_size(11).text_color(t.dim).child(meta)));
+          .when(Boolean(meta), (e) => e.child(div().truncate().text_size(11).text_color(t.dim).child(meta)))
+          .when(Boolean(it.labels?.length), (e) => e.child(h_flex().gap(4).flex_wrap().pt(2)
+            .children(it.labels.slice(0, 5).map((l) => div().px(5).py(1).rounded(4).bg(t.accent + "1a").text_size(10.5).text_color(t.accent).child(l)))));
       }));
   }
 
@@ -1107,15 +1117,48 @@ export class Panel {
     ];
   }
 
+  compareMenu(which, cx) {
+    if (!this.root) return;
+    const { root, on } = this;
+    cx.spawn(async (cx) => {
+      const r = await exec("git", [...G.READ, "for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/heads", "refs/remotes"], { cwd: root, on });
+      const refs = r.code === 0 ? r.stdout.split("\n").map((s) => s.trim()).filter((s) => s && !s.endsWith("/HEAD")).slice(0, 35) : [];
+      const current = which === "base" ? this.compareBase : this.compareHead;
+      const pick = (val, cx) => {
+        if (which === "base") this.compareBase = val;
+        else this.compareHead = val;
+        this.repo = null; this.repoModel = null;
+        this.refresh(cx); cx.notify();
+      };
+      this.menu([
+        { label: which === "base" ? "Auto base" : "Current (HEAD)", check: !current, run: (cx) => pick(null, cx) },
+        { separator: true },
+        ...refs.map((ref) => ({ label: ref, check: current === ref, run: (cx) => pick(ref, cx) })),
+      ], cx);
+    });
+  }
+
   repoToolbar(t) {
     const repo = this.repo, entries = repo?.entries ?? [], any = entries.length > 0 && Boolean(repo.mergeBase);
-    return h_flex().h(32).flex_none().px(8).gap(4).items_center().border_b(1).border_color(t.border)
-      .child(this.iconButton("view-diff-base", "diff", repo?.base ? `Show every change since ${repo.base} in the main area` : "Show every change of the branch",
-        (cx) => this.pickBranch({ area: "base" }, cx), t, { label: "View Diff", disabled: !any }))
-      .when(any, (e) => e.child(this.lineCounts(entries, t)))
-      .child(div().flex_1().min_w(0).truncate().text_right().text_size(11).text_color(t.dim).child(repo?.base ? `${entries.length} since ${repo.base}` : ""))
-      .children(this.viewSwitches(t))
-      .child(this.iconButton("refresh-repo", "refresh", "Refresh", (cx) => this.refresh(cx), t, { disabled: Boolean(this.busy) }));
+    const chip = (id, label, tip, which) => h_flex().id(id).h(22).px(6).gap(3).flex_none().items_center().rounded(5).border_1().border_color(t.border).bg(t.background)
+      .cursor_pointer().text_size(11).text_color(t.foreground).hover((s) => s.bg(t.hover)).tooltip(tip)
+      .on_click((_e, cx) => this.compareMenu(which, cx))
+      .child(div().max_w(90).truncate().child(label))
+      .child(svg(icon("chevron-down")).size(10).flex_none().text_color(t.dim));
+    return v_flex().flex_none().border_b(1).border_color(t.border)
+      .child(h_flex().h(30).px(8).gap(4).items_center()
+        .child(div().text_size(11).text_color(t.dim).child("Compare:"))
+        .child(chip("repo-base", this.compareBase || repo?.baseRef || "base", "Choose base branch", "base"))
+        .child(div().text_size(11).text_color(t.dim).child("→"))
+        .child(chip("repo-head", this.compareHead || "HEAD", "Choose target branch", "head"))
+        .child(div().flex_1().min_w(0).truncate().text_right().text_size(11).text_color(t.dim).child(`${entries.length} files`)))
+      .child(h_flex().h(30).px(8).gap(4).items_center().border_t(1).border_color(t.border)
+        .child(this.iconButton("view-diff-base", "diff", repo?.base ? `Show every change (${repo.base}) in the main area` : "Show every change of the branch",
+          (cx) => this.pickBranch({ area: "base" }, cx), t, { label: "View Diff", disabled: !any }))
+        .when(any, (e) => e.child(this.lineCounts(entries, t)))
+        .child(div().flex_1())
+        .children(this.viewSwitches(t))
+        .child(this.iconButton("refresh-repo", "refresh", "Refresh", (cx) => this.refresh(cx), t, { disabled: Boolean(this.busy) })));
   }
 
   toolbar(t) {

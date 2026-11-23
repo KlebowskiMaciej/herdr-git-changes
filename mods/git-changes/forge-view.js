@@ -1,8 +1,8 @@
 // Full detail view for a GitHub/GitLab PR, MR, or Issue in Herdr's main area.
 // Follows the same shared-state single-tab-per-space pattern as diff.js.
 import { div, svg } from "gpui-kit";
-import { v_flex, h_flex, TextView } from "gpui-base";
-import { exec, theme, props, shared, setShared, spaces, panes, run, window as appWindow } from "herdr";
+import { v_flex, h_flex, TextView, TextareaState, Textarea } from "gpui-base";
+import { exec, theme, props, shared, setShared, spaces, panes, run, notify, window as appWindow } from "herdr";
 import * as F from "./forge.js";
 import { icon } from "./menu.js";
 
@@ -56,6 +56,9 @@ export class ForgeView {
     this.detail = null;
     this.error = null;
     this.loading = false;
+    this.posting = false;
+    this.commentBox = TextareaState.new({ placeholder: "Write a comment…", rows: 3 });
+    this.commentBox.on("submit", (e, cx) => { if (e.secondary) this.submitComment(cx); });
     this.sync(cx);
   }
 
@@ -191,6 +194,37 @@ export class ForgeView {
         .when(f.deletions > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.deletions}`)))));
   }
 
+  submitComment(cx) {
+    const body = this.commentBox.value().trim();
+    if (!body || this.posting || !this.item || !this.source?.forge) return;
+    const { root, on, forge } = this.source, item = this.item;
+    this.posting = true;
+    cx.spawn(async (cx) => {
+      try {
+        await F.postComment(exec, forge, item, body, { cwd: root, on });
+        this.commentBox.set_value("");
+        this.reload(cx);
+      } catch (e) {
+        notify({ title: "Comment failed", body: String(e?.message ?? e), level: "error" });
+      } finally {
+        this.posting = false; cx.notify();
+      }
+    });
+    cx.notify();
+  }
+
+  commentComposer(t) {
+    return v_flex().gap(6).p(10).rounded(8).border_1().border_color(t.border).bg(t.raised)
+      .child(div().p(6).rounded(6).border_1().border_color(t.border).bg(t.background)
+        .child(Textarea.new(this.commentBox).w_full().h(64).text_size(12).text_color(t.foreground)))
+      .child(h_flex().items_center().gap(8)
+        .child(div().flex_1().text_size(11).text_color(t.dim).child("⌘↩ to post comment"))
+        .child(h_flex().id(`${this.uid}-post`).h(24).px(10).items_center().rounded(6).cursor_pointer().text_size(11.5).font_semibold()
+          .bg(t.accent).text_color(t.background).hover((s) => s.opacity(0.9))
+          .on_click((_e, cx) => this.submitComment(cx))
+          .child(this.posting ? "Posting…" : "Comment")));
+  }
+
   overviewBody(d, t) {
     const metas = [
       this.metaRow("Assignees", (d.assignees ?? []).map((a) => ({ text: `@${a}` })), t),
@@ -202,7 +236,8 @@ export class ForgeView {
       .child(v_flex().p(12).rounded(8).border_1().border_color(t.border).bg(t.raised)
         .child(TextView.markdown(`${this.uid}-body`, d.body?.trim() || "_No description provided._").selectable().w_full()))
       .when(Boolean(d.checks?.length), (e) => e.child(this.checksSection(d.checks, t)))
-      .child(this.commentsSection(d.comments, t));
+      .child(this.commentsSection(d.comments, t))
+      .child(this.commentComposer(t));
   }
 
   ciBody(d, t) {
